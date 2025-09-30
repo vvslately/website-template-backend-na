@@ -111,6 +111,14 @@ CREATE TABLE `roles` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
+-- Insert default roles
+INSERT INTO `roles` (`rank_name`, `can_edit_categories`, `can_edit_products`, `can_edit_users`, `can_edit_orders`, `can_manage_keys`, `can_view_reports`, `can_manage_promotions`, `can_manage_settings`, `can_access_reseller_price`) VALUES
+('member', 0, 0, 0, 0, 0, 0, 0, 0, 0),
+('moderator', 1, 1, 0, 1, 1, 1, 0, 0, 0),
+('admin', 1, 1, 1, 1, 1, 1, 1, 1, 1),
+('super_admin', 1, 1, 1, 1, 1, 1, 1, 1, 1),
+('reseller', 0, 0, 0, 0, 0, 0, 0, 0, 1);
+
 DROP TABLE IF EXISTS `theme_settings`;
 CREATE TABLE `theme_settings` (
   `id` int NOT NULL AUTO_INCREMENT,

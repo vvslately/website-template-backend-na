@@ -56,6 +56,111 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// Role-based permission middleware
+const requirePermission = (permission) => {
+  return async (req, res, next) => {
+    try {
+      const userId = req.user.id;
+
+      // Get user's role and permissions
+      const [userRoles] = await pool.execute(
+        `SELECT 
+          u.role,
+          r.${permission}
+        FROM users u
+        LEFT JOIN roles r ON u.role = r.rank_name
+        WHERE u.id = ?`,
+        [userId]
+      );
+
+      if (userRoles.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+
+      const userRole = userRoles[0];
+
+      // If no role found in roles table, deny access
+      if (!userRole[permission]) {
+        return res.status(403).json({
+          success: false,
+          message: `Access denied. Required permission: ${permission}`,
+          user_role: userRole.role || 'member'
+        });
+      }
+
+      // Check if user has the required permission
+      if (!userRole[permission]) {
+        return res.status(403).json({
+          success: false,
+          message: `Access denied. Required permission: ${permission}`,
+          user_role: userRole.role
+        });
+      }
+
+      next();
+    } catch (error) {
+      console.error('Permission check error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: error.message
+      });
+    }
+  };
+};
+
+// Helper function to check multiple permissions
+const requireAnyPermission = (permissions) => {
+  return async (req, res, next) => {
+    try {
+      const userId = req.user.id;
+
+      // Get user's role and permissions
+      const [userRoles] = await pool.execute(
+        `SELECT 
+          u.role,
+          ${permissions.map(p => `r.${p}`).join(', ')}
+        FROM users u
+        LEFT JOIN roles r ON u.role = r.rank_name
+        WHERE u.id = ?`,
+        [userId]
+      );
+
+      if (userRoles.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+
+      const userRole = userRoles[0];
+
+      // Check if user has any of the required permissions
+      const hasPermission = permissions.some(permission => userRole[permission]);
+
+      if (!hasPermission) {
+        return res.status(403).json({
+          success: false,
+          message: `Access denied. Required any of these permissions: ${permissions.join(', ')}`,
+          user_role: userRole.role || 'member'
+        });
+      }
+
+      next();
+    } catch (error) {
+      console.error('Permission check error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: error.message
+      });
+    }
+  };
+};
+
 
 // Basic health check
 app.get('/', (req, res) => {
@@ -416,7 +521,6 @@ app.get('/categories', async (req, res) => {
   }
 });
 
-
 // Get flat categories endpoint (non-nested structure)
 app.get('/categories/flat', async (req, res) => {
   try {
@@ -449,7 +553,6 @@ app.get('/categories/nested', async (req, res) => {
     const [categories] = await pool.execute(
       'SELECT id, parent_id, title, subtitle, image, category, featured, isActive, priority, created_at FROM categories WHERE isActive = 1 ORDER BY priority DESC, title ASC'
     );
-
     // Build hierarchical structure
     const categoryMap = new Map();
     const rootCategories = [];
@@ -499,7 +602,6 @@ app.get('/categories/nested', async (req, res) => {
 app.get('/categories/:categoryId/products', async (req, res) => {
   try {
     const categoryId = req.params.categoryId;
-
     // Validate category ID
     if (!categoryId || isNaN(categoryId)) {
       return res.status(400).json({
@@ -883,6 +985,225 @@ app.get('/my-transactions', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('My transactions error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get user role permissions endpoint
+app.get('/myrole', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Get user's role and role permissions
+    const [userRoles] = await pool.execute(
+      `SELECT 
+        u.id, u.fullname, u.email, u.role,
+        r.id as role_id, r.rank_name, 
+        r.can_edit_categories, r.can_edit_products, r.can_edit_users, 
+        r.can_edit_orders, r.can_manage_keys, r.can_view_reports, 
+        r.can_manage_promotions, r.can_manage_settings, r.can_access_reseller_price
+      FROM users u
+      LEFT JOIN roles r ON u.role = r.rank_name
+      WHERE u.id = ?`,
+      [userId]
+    );
+
+    if (userRoles.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const userRole = userRoles[0];
+
+    // If no role found in roles table, return default member permissions
+    if (!userRole.role_id) {
+      return res.json({
+        success: true,
+        message: 'User role permissions retrieved successfully',
+        user: {
+          id: userRole.id,
+          fullname: userRole.fullname,
+          email: userRole.email,
+          role: userRole.role || 'member'
+        },
+        permissions: {
+          can_edit_categories: false,
+          can_edit_products: false,
+          can_edit_users: false,
+          can_edit_orders: false,
+          can_manage_keys: false,
+          can_view_reports: false,
+          can_manage_promotions: false,
+          can_manage_settings: false,
+          can_access_reseller_price: false
+        },
+        role_info: {
+          id: null,
+          rank_name: userRole.role || 'member',
+          description: 'Default member role with basic permissions'
+        }
+      });
+    }
+
+    // Return role permissions
+    res.json({
+      success: true,
+      message: 'User role permissions retrieved successfully',
+      user: {
+        id: userRole.id,
+        fullname: userRole.fullname,
+        email: userRole.email,
+        role: userRole.role
+      },
+      permissions: {
+        can_edit_categories: Boolean(userRole.can_edit_categories),
+        can_edit_products: Boolean(userRole.can_edit_products),
+        can_edit_users: Boolean(userRole.can_edit_users),
+        can_edit_orders: Boolean(userRole.can_edit_orders),
+        can_manage_keys: Boolean(userRole.can_manage_keys),
+        can_view_reports: Boolean(userRole.can_view_reports),
+        can_manage_promotions: Boolean(userRole.can_manage_promotions),
+        can_manage_settings: Boolean(userRole.can_manage_settings),
+        can_access_reseller_price: Boolean(userRole.can_access_reseller_price)
+      },
+      role_info: {
+        id: userRole.role_id,
+        rank_name: userRole.rank_name,
+        description: `Role: ${userRole.rank_name} with specific permissions`
+      }
+    });
+
+  } catch (error) {
+    console.error('My role error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get all roles endpoint (admin only)
+app.get('/roles', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
+  try {
+    const [roles] = await pool.execute(
+      'SELECT * FROM roles ORDER BY id ASC'
+    );
+
+    res.json({
+      success: true,
+      message: 'Roles retrieved successfully',
+      roles: roles
+    });
+
+  } catch (error) {
+    console.error('Roles error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Update user role endpoint (admin only)
+app.put('/users/:userId/role', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { role } = req.body;
+
+    // Validate required fields
+    if (!role) {
+      return res.status(400).json({
+        success: false,
+        message: 'Role is required'
+      });
+    }
+
+    // Check if role exists
+    const [roleCheck] = await pool.execute(
+      'SELECT id FROM roles WHERE rank_name = ?',
+      [role]
+    );
+
+    if (roleCheck.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid role. Available roles: member, moderator, admin, super_admin, reseller'
+      });
+    }
+
+    // Check if user exists
+    const [userCheck] = await pool.execute(
+      'SELECT id, fullname, email FROM users WHERE id = ?',
+      [userId]
+    );
+
+    if (userCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Update user role
+    await pool.execute(
+      'UPDATE users SET role = ? WHERE id = ?',
+      [role, userId]
+    );
+
+    res.json({
+      success: true,
+      message: 'User role updated successfully',
+      user: {
+        id: userCheck[0].id,
+        fullname: userCheck[0].fullname,
+        email: userCheck[0].email,
+        role: role
+      }
+    });
+
+  } catch (error) {
+    console.error('Update user role error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Example protected endpoint that requires specific permission
+app.get('/admin/dashboard', authenticateToken, requirePermission('can_view_reports'), async (req, res) => {
+  try {
+    // This endpoint is only accessible to users with can_view_reports permission
+    const [stats] = await pool.execute(
+      `SELECT 
+        (SELECT COUNT(*) FROM users) as total_users,
+        (SELECT COUNT(*) FROM products) as total_products,
+        (SELECT COUNT(*) FROM transactions) as total_transactions,
+        (SELECT SUM(total_price) FROM transactions) as total_revenue`
+    );
+
+    res.json({
+      success: true,
+      message: 'Admin dashboard data retrieved successfully',
+      dashboard: {
+        total_users: stats[0].total_users,
+        total_products: stats[0].total_products,
+        total_transactions: stats[0].total_transactions,
+        total_revenue: stats[0].total_revenue || 0
+      }
+    });
+
+  } catch (error) {
+    console.error('Admin dashboard error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error',
