@@ -294,6 +294,7 @@ app.get('/theme-settings', async (req, res) => {
         secondary_color: theme.secondary_color,
         background_color: theme.background_color,
         text_color: theme.text_color,
+        theme_mode: theme.theme_mode,
         updated_at: theme.updated_at
       }
     });
@@ -344,6 +345,9 @@ app.get('/get-web-config', async (req, res) => {
         banner3_link: config.banner3_link,
         background_image: config.background_image,
         footer_image: config.footer_image,
+        load_logo: config.load_logo,
+        footer_logo: config.footer_logo,
+        theme: config.theme,
         created_at: config.created_at,
         updated_at: config.updated_at
       }
