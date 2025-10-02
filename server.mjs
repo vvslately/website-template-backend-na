@@ -28,9 +28,25 @@ const pool = mysql.createPool(dbConfig);
 
 // Middleware
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000' , 'https://vhouse.online'],
+  origin: (origin, callback) => {
+    // อนุญาต localhost สำหรับ dev
+    if (!origin || 
+        origin.startsWith('http://localhost') || 
+        origin.startsWith('https://localhost')) {
+      return callback(null, true);
+    }
+
+    // อนุญาตทุก subdomain ของ vhouse.online
+    if (/\.vhouse\.online$/.test(origin) || origin === 'https://vhouse.online') {
+      return callback(null, true);
+    }
+
+    // ไม่อนุญาต origin อื่น
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true
 }));
+
 app.use(express.json());
 
 // Multi-tenant middleware - Extract subdomain and find customer_id
