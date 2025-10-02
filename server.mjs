@@ -39,32 +39,59 @@ const multiTenantMiddleware = async (req, res, next) => {
     // Get host from request
     const host = req.get('host') || req.get('x-forwarded-host') || '';
     
-    // Extract subdomain (assuming format: subdomain.yourdomain.com)
-    const subdomain = host.split('.')[0];
-    
-    // Skip multi-tenant for localhost and main domain
-    if (host.includes('localhost') || host === 'vhouse.online' || !subdomain || subdomain === 'www') {
-      // For localhost testing, use 'death' as default website_name
-      if (host.includes('localhost')) {
-        const [sites] = await pool.execute(
-          'SELECT customer_id, website_name FROM auth_sites WHERE website_name = ?',
-          ['death']
-        );
-        
-        if (sites.length > 0) {
-          const site = sites[0];
-          req.customer_id = parseInt(site.customer_id);
-          req.website_name = site.website_name;
-        } else {
-          req.customer_id = null;
-          req.website_name = null;
-        }
+    // Check if it's localhost first - auto use 'death'
+    if (host.includes('localhost')) {
+      const [sites] = await pool.execute(
+        'SELECT customer_id, website_name FROM auth_sites WHERE website_name = ?',
+        ['death']
+      );
+      
+      if (sites.length > 0) {
+        const site = sites[0];
+        req.customer_id = parseInt(site.customer_id);
+        req.website_name = site.website_name;
       } else {
         req.customer_id = null;
         req.website_name = null;
       }
       return next();
     }
+    
+    let subdomain = req.get('x-subdomain') || req.get('x-website-name');
+    
+    // If no custom header, try to extract from origin header
+    if (!subdomain) {
+      const origin = req.get('origin') || '';
+      if (origin.includes('vhouse.online')) {
+        // Extract subdomain from origin: https://subdomain.vhouse.online
+        const originMatch = origin.match(/https?:\/\/([^.]+)\.vhouse\.online/);
+        if (originMatch) {
+          subdomain = originMatch[1];
+        }
+      }
+    }
+    
+    // If still no subdomain, try to extract from host (for direct API calls)
+    if (!subdomain) {
+      subdomain = host.split('.')[0];
+    }
+    
+    // Skip multi-tenant for main domain
+    if (host === 'vhouse.online' || !subdomain || subdomain === 'www') {
+      req.customer_id = null;
+      req.website_name = null;
+      return next();
+    }
+    
+    // Debug logging for production troubleshooting
+    console.log('Multi-tenant Debug:', {
+      host,
+      origin: req.get('origin'),
+      xSubdomain: req.get('x-subdomain'),
+      xWebsiteName: req.get('x-website-name'),
+      extractedSubdomain: subdomain,
+      userAgent: req.get('user-agent')
+    });
     
     // Find customer_id from auth_sites table using website_name
     const [sites] = await pool.execute(
@@ -76,7 +103,13 @@ const multiTenantMiddleware = async (req, res, next) => {
       return res.status(404).json({
         success: false,
         message: 'Website not found or inactive',
-        subdomain: subdomain
+        subdomain: subdomain,
+        debug: {
+          host,
+          origin: req.get('origin'),
+          xSubdomain: req.get('x-subdomain'),
+          xWebsiteName: req.get('x-website-name')
+        }
       });
     }
     
