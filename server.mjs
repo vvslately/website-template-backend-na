@@ -3,6 +3,7 @@ import mysql from 'mysql2/promise';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import cors from 'cors';
+import axios from 'axios';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,7 +15,7 @@ const JWT_SECRET = '32670cc39ca9333bedb30406cc22c4bc';
 const dbConfig = {
   host: 'gondola.proxy.rlwy.net',
   port: 11555,
-  user: 'root',
+  user: 'root', 
   password: 'tzspZOlqqEvABEgEeCCbDbAFdkGiQSYQ',
   database: 'railway',
   ssl: {
@@ -27,10 +28,75 @@ const pool = mysql.createPool(dbConfig);
 
 // Middleware
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000'],
+  origin: ['http://localhost:5173', 'http://localhost:3000' , 'https://vhouse.online'],
   credentials: true
 }));
 app.use(express.json());
+
+// Multi-tenant middleware - Extract subdomain and find customer_id
+const multiTenantMiddleware = async (req, res, next) => {
+  try {
+    // Get host from request
+    const host = req.get('host') || req.get('x-forwarded-host') || '';
+    
+    // Extract subdomain (assuming format: subdomain.yourdomain.com)
+    const subdomain = host.split('.')[0];
+    
+    // Skip multi-tenant for localhost and main domain
+    if (host.includes('localhost') || host === 'vhouse.online' || !subdomain || subdomain === 'www') {
+      // For localhost testing, use 'death' as default website_name
+      if (host.includes('localhost')) {
+        const [sites] = await pool.execute(
+          'SELECT customer_id, website_name FROM auth_sites WHERE website_name = ?',
+          ['death']
+        );
+        
+        if (sites.length > 0) {
+          const site = sites[0];
+          req.customer_id = parseInt(site.customer_id);
+          req.website_name = site.website_name;
+        } else {
+          req.customer_id = null;
+          req.website_name = null;
+        }
+      } else {
+        req.customer_id = null;
+        req.website_name = null;
+      }
+      return next();
+    }
+    
+    // Find customer_id from auth_sites table using website_name
+    const [sites] = await pool.execute(
+      'SELECT customer_id, website_name FROM auth_sites WHERE website_name = ?',
+      [subdomain]
+    );
+    
+    if (sites.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Website not found or inactive',
+        subdomain: subdomain
+      });
+    }
+    
+    const site = sites[0];
+    req.customer_id = parseInt(site.customer_id);
+    req.website_name = site.website_name;
+    
+    next();
+  } catch (error) {
+    console.error('Multi-tenant middleware error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+};
+
+// Apply multi-tenant middleware to all routes
+app.use(multiTenantMiddleware);
 
 // Authentication middleware
 const authenticateToken = (req, res, next) => {
@@ -173,6 +239,14 @@ app.get('/', (req, res) => {
 // Signup endpoint
 app.post('/signup', async (req, res) => {
   try {
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
     const { fullname, email, password } = req.body;
 
     // Validate required fields
@@ -183,10 +257,10 @@ app.post('/signup', async (req, res) => {
       });
     }
 
-    // Check if user already exists
+    // Check if user already exists for this customer
     const [existingUsers] = await pool.execute(
-      'SELECT id FROM users WHERE email = ?',
-      [email]
+      'SELECT id FROM users WHERE email = ? AND customer_id = ?',
+      [email, req.customer_id]
     );
 
     if (existingUsers.length > 0) {
@@ -200,10 +274,10 @@ app.post('/signup', async (req, res) => {
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    // Insert new user
+    // Insert new user with customer_id
     const [result] = await pool.execute(
-      'INSERT INTO users (fullname, email, password) VALUES (?, ?, ?)',
-      [fullname, email, hashedPassword]
+      'INSERT INTO users (customer_id, fullname, email, password) VALUES (?, ?, ?, ?)',
+      [req.customer_id, fullname, email, hashedPassword]
     );
 
     // Generate JWT token
@@ -211,7 +285,8 @@ app.post('/signup', async (req, res) => {
       { 
         id: result.insertId, 
         email: email,
-        fullname: fullname
+        fullname: fullname,
+        customer_id: req.customer_id
       },
       JWT_SECRET,
       { expiresIn: '24h' }
@@ -241,6 +316,14 @@ app.post('/signup', async (req, res) => {
 // Login endpoint
 app.post('/login', async (req, res) => {
   try {
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
     const { email, password } = req.body;
 
     // Validate required fields
@@ -251,10 +334,10 @@ app.post('/login', async (req, res) => {
       });
     }
 
-    // Find user by email
+    // Find user by email and customer_id
     const [users] = await pool.execute(
-      'SELECT id, fullname, email, password, money, points, role FROM users WHERE email = ?',
-      [email]
+      'SELECT id, fullname, email, password, money, points, role FROM users WHERE email = ? AND customer_id = ?',
+      [email, req.customer_id]
     );
 
     if (users.length === 0) {
@@ -281,7 +364,8 @@ app.post('/login', async (req, res) => {
       { 
         id: user.id, 
         email: user.email,
-        fullname: user.fullname
+        fullname: user.fullname,
+        customer_id: req.customer_id
       },
       JWT_SECRET,
       { expiresIn: '24h' }
@@ -314,9 +398,17 @@ app.post('/login', async (req, res) => {
 // Get user profile (protected route)
 app.get('/my-profile', authenticateToken, async (req, res) => {
   try {
+    // Check if customer_id matches token
+    if (req.user.customer_id !== req.customer_id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied - customer mismatch'
+      });
+    }
+
     const [users] = await pool.execute(
-      'SELECT id, fullname, email, money, points, role, created_at FROM users WHERE id = ?',
-      [req.user.id]
+      'SELECT id, fullname, email, money, points, role, created_at FROM users WHERE id = ? AND customer_id = ?',
+      [req.user.id, req.customer_id]
     );
 
     if (users.length === 0) {
@@ -362,29 +454,47 @@ app.post('/logout', authenticateToken, (req, res) => {
 
 // Verify token endpoint
 app.get('/verify-token', authenticateToken, (req, res) => {
+  // Check if customer_id matches token
+  if (req.user.customer_id !== req.customer_id) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied - customer mismatch'
+    });
+  }
+
   res.json({
     success: true,
     message: 'Token is valid',
     user: {
       id: req.user.id,
       email: req.user.email,
-      fullname: req.user.fullname
+      fullname: req.user.fullname,
+      customer_id: req.user.customer_id
     }
   });
 });
 
-// Get first theme settings endpoint
+// Get theme settings endpoint
 app.get('/theme-settings', async (req, res) => {
   try {
-    // Get first theme settings only
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    // Get theme settings for specific customer
     const [themes] = await pool.execute(
-      'SELECT * FROM theme_settings ORDER BY id LIMIT 1'
+      'SELECT * FROM theme_settings WHERE customer_id = ? ORDER BY id LIMIT 1',
+      [req.customer_id]
     );
 
     if (themes.length === 0) {
       return res.status(404).json({
         success: false,
-        message: 'No theme settings found'
+        message: 'No theme settings found for this customer'
       });
     }
 
@@ -414,18 +524,143 @@ app.get('/theme-settings', async (req, res) => {
   }
 });
 
+// Update theme settings endpoint
+app.put('/update-theme-settings', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    const {
+      primary_color,
+      secondary_color,
+      background_color,
+      text_color,
+      theme_mode
+    } = req.body;
+
+    // Check if theme settings exist for this customer
+    const [existingThemes] = await pool.execute(
+      'SELECT id FROM theme_settings WHERE customer_id = ?',
+      [req.customer_id]
+    );
+
+    if (existingThemes.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No theme settings found for this customer. Cannot create new theme settings.'
+      });
+    }
+
+    // Build update query dynamically
+    const updateFields = [];
+    const updateValues = [];
+
+    if (primary_color !== undefined) {
+      updateFields.push('primary_color = ?');
+      updateValues.push(primary_color);
+    }
+    if (secondary_color !== undefined) {
+      updateFields.push('secondary_color = ?');
+      updateValues.push(secondary_color);
+    }
+    if (background_color !== undefined) {
+      updateFields.push('background_color = ?');
+      updateValues.push(background_color);
+    }
+    if (text_color !== undefined) {
+      updateFields.push('text_color = ?');
+      updateValues.push(text_color);
+    }
+    if (theme_mode !== undefined) {
+      updateFields.push('theme_mode = ?');
+      updateValues.push(theme_mode);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid fields to update'
+      });
+    }
+
+    // Add customer_id to the end of values array
+    updateValues.push(req.customer_id);
+
+    // Execute update
+    const [result] = await pool.execute(
+      `UPDATE theme_settings SET ${updateFields.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE customer_id = ?`,
+      updateValues
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Theme settings not found or no changes made'
+      });
+    }
+
+    // Get updated theme settings
+    const [updatedThemes] = await pool.execute(
+      'SELECT * FROM theme_settings WHERE customer_id = ?',
+      [req.customer_id]
+    );
+
+    const updatedTheme = updatedThemes[0];
+
+    res.json({
+      success: true,
+      message: 'Theme settings updated successfully',
+      theme: {
+        id: updatedTheme.id,
+        primary_color: updatedTheme.primary_color,
+        secondary_color: updatedTheme.secondary_color,
+        background_color: updatedTheme.background_color,
+        text_color: updatedTheme.text_color,
+        theme_mode: updatedTheme.theme_mode,
+        updated_at: updatedTheme.updated_at
+      }
+    });
+
+  } catch (error) {
+    console.error('Update theme settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
 // Get web config endpoint
 app.get('/get-web-config', async (req, res) => {
   try {
-    // Get first config only
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    // Get config for specific customer (excluding theme)
     const [configs] = await pool.execute(
-      'SELECT * FROM config ORDER BY id LIMIT 1'
+      `SELECT id, owner_phone, site_name, site_logo, meta_title, meta_description, 
+       meta_keywords, meta_author, discord_link, discord_webhook, banner_link, 
+       banner2_link, banner3_link, background_image, footer_image, load_logo, 
+       footer_logo, created_at, updated_at 
+       FROM config WHERE customer_id = ? ORDER BY id LIMIT 1`,
+      [req.customer_id]
     );
 
     if (configs.length === 0) {
       return res.status(404).json({
         success: false,
-        message: 'No web config found'
+        message: 'No web config found for this customer'
       });
     }
 
@@ -452,7 +687,6 @@ app.get('/get-web-config', async (req, res) => {
         footer_image: config.footer_image,
         load_logo: config.load_logo,
         footer_logo: config.footer_logo,
-        theme: config.theme,
         created_at: config.created_at,
         updated_at: config.updated_at
       }
@@ -468,12 +702,204 @@ app.get('/get-web-config', async (req, res) => {
   }
 });
 
+// Update web config endpoint (excluding theme)
+app.put('/update-web-config', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    const {
+      owner_phone,
+      site_name,
+      site_logo,
+      meta_title,
+      meta_description,
+      meta_keywords,
+      meta_author,
+      discord_link,
+      discord_webhook,
+      banner_link,
+      banner2_link,
+      banner3_link,
+      background_image,
+      footer_image,
+      load_logo,
+      footer_logo
+    } = req.body;
+
+    // Check if config exists for this customer
+    const [existingConfigs] = await pool.execute(
+      'SELECT id FROM config WHERE customer_id = ?',
+      [req.customer_id]
+    );
+
+    if (existingConfigs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No config found for this customer. Cannot create new config.'
+      });
+    }
+
+    // Build update query dynamically
+    const updateFields = [];
+    const updateValues = [];
+
+    if (owner_phone !== undefined) {
+      updateFields.push('owner_phone = ?');
+      updateValues.push(owner_phone);
+    }
+    if (site_name !== undefined) {
+      updateFields.push('site_name = ?');
+      updateValues.push(site_name);
+    }
+    if (site_logo !== undefined) {
+      updateFields.push('site_logo = ?');
+      updateValues.push(site_logo);
+    }
+    if (meta_title !== undefined) {
+      updateFields.push('meta_title = ?');
+      updateValues.push(meta_title);
+    }
+    if (meta_description !== undefined) {
+      updateFields.push('meta_description = ?');
+      updateValues.push(meta_description);
+    }
+    if (meta_keywords !== undefined) {
+      updateFields.push('meta_keywords = ?');
+      updateValues.push(meta_keywords);
+    }
+    if (meta_author !== undefined) {
+      updateFields.push('meta_author = ?');
+      updateValues.push(meta_author);
+    }
+    if (discord_link !== undefined) {
+      updateFields.push('discord_link = ?');
+      updateValues.push(discord_link);
+    }
+    if (discord_webhook !== undefined) {
+      updateFields.push('discord_webhook = ?');
+      updateValues.push(discord_webhook);
+    }
+    if (banner_link !== undefined) {
+      updateFields.push('banner_link = ?');
+      updateValues.push(banner_link);
+    }
+    if (banner2_link !== undefined) {
+      updateFields.push('banner2_link = ?');
+      updateValues.push(banner2_link);
+    }
+    if (banner3_link !== undefined) {
+      updateFields.push('banner3_link = ?');
+      updateValues.push(banner3_link);
+    }
+    if (background_image !== undefined) {
+      updateFields.push('background_image = ?');
+      updateValues.push(background_image);
+    }
+    if (footer_image !== undefined) {
+      updateFields.push('footer_image = ?');
+      updateValues.push(footer_image);
+    }
+    if (load_logo !== undefined) {
+      updateFields.push('load_logo = ?');
+      updateValues.push(load_logo);
+    }
+    if (footer_logo !== undefined) {
+      updateFields.push('footer_logo = ?');
+      updateValues.push(footer_logo);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid fields to update'
+      });
+    }
+
+    // Add customer_id to the end of values array
+    updateValues.push(req.customer_id);
+
+    // Execute update
+    const [result] = await pool.execute(
+      `UPDATE config SET ${updateFields.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE customer_id = ?`,
+      updateValues
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Config not found or no changes made'
+      });
+    }
+
+    // Get updated config
+    const [updatedConfigs] = await pool.execute(
+      `SELECT id, owner_phone, site_name, site_logo, meta_title, meta_description, 
+       meta_keywords, meta_author, discord_link, discord_webhook, banner_link, 
+       banner2_link, banner3_link, background_image, footer_image, load_logo, 
+       footer_logo, created_at, updated_at 
+       FROM config WHERE customer_id = ?`,
+      [req.customer_id]
+    );
+
+    const updatedConfig = updatedConfigs[0];
+
+    res.json({
+      success: true,
+      message: 'Web config updated successfully',
+      config: {
+        id: updatedConfig.id,
+        owner_phone: updatedConfig.owner_phone,
+        site_name: updatedConfig.site_name,
+        site_logo: updatedConfig.site_logo,
+        meta_title: updatedConfig.meta_title,
+        meta_description: updatedConfig.meta_description,
+        meta_keywords: updatedConfig.meta_keywords,
+        meta_author: updatedConfig.meta_author,
+        discord_link: updatedConfig.discord_link,
+        discord_webhook: updatedConfig.discord_webhook,
+        banner_link: updatedConfig.banner_link,
+        banner2_link: updatedConfig.banner2_link,
+        banner3_link: updatedConfig.banner3_link,
+        background_image: updatedConfig.background_image,
+        footer_image: updatedConfig.footer_image,
+        load_logo: updatedConfig.load_logo,
+        footer_logo: updatedConfig.footer_logo,
+        created_at: updatedConfig.created_at,
+        updated_at: updatedConfig.updated_at
+      }
+    });
+
+  } catch (error) {
+    console.error('Update web config error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
 // Get categories endpoint (hierarchical structure)
 app.get('/categories', async (req, res) => {
   try {
-    // Get all categories ordered by priority and title
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    // Get all categories for specific customer ordered by priority and title
     const [categories] = await pool.execute(
-      'SELECT id, parent_id, title, subtitle, image, category, featured, isActive, priority, created_at FROM categories WHERE isActive = 1 ORDER BY priority DESC, title ASC'
+      'SELECT id, parent_id, title, subtitle, image, category, featured, isActive, priority, created_at FROM categories WHERE customer_id = ? AND isActive = 1 ORDER BY priority DESC, title ASC',
+      [req.customer_id]
     );
 
     // Build hierarchical structure
@@ -524,9 +950,18 @@ app.get('/categories', async (req, res) => {
 // Get flat categories endpoint (non-nested structure)
 app.get('/categories/flat', async (req, res) => {
   try {
-    // Get all categories in flat structure ordered by priority and title
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    // Get all categories in flat structure for specific customer ordered by priority and title
     const [categories] = await pool.execute(
-      'SELECT id, parent_id, title, subtitle, image, category, featured, isActive, priority, created_at FROM categories WHERE isActive = 1 ORDER BY priority DESC, title ASC'
+      'SELECT id, parent_id, title, subtitle, image, category, featured, isActive, priority, created_at FROM categories WHERE customer_id = ? AND isActive = 1 ORDER BY priority DESC, title ASC',
+      [req.customer_id]
     );
 
     res.json({
@@ -549,10 +984,20 @@ app.get('/categories/flat', async (req, res) => {
 // Get nested categories endpoint (hierarchical structure)
 app.get('/categories/nested', async (req, res) => {
   try {
-    // Get all categories ordered by priority and title
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    // Get all categories for specific customer ordered by priority and title
     const [categories] = await pool.execute(
-      'SELECT id, parent_id, title, subtitle, image, category, featured, isActive, priority, created_at FROM categories WHERE isActive = 1 ORDER BY priority DESC, title ASC'
+      'SELECT id, parent_id, title, subtitle, image, category, featured, isActive, priority, created_at FROM categories WHERE customer_id = ? AND isActive = 1 ORDER BY priority DESC, title ASC',
+      [req.customer_id]
     );
+    
     // Build hierarchical structure
     const categoryMap = new Map();
     const rootCategories = [];
@@ -601,6 +1046,14 @@ app.get('/categories/nested', async (req, res) => {
 // Get products by category ID endpoint
 app.get('/categories/:categoryId/products', async (req, res) => {
   try {
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
     const categoryId = req.params.categoryId;
     // Validate category ID
     if (!categoryId || isNaN(categoryId)) {
@@ -610,10 +1063,10 @@ app.get('/categories/:categoryId/products', async (req, res) => {
       });
     }
 
-    // Check if category exists
+    // Check if category exists for this customer
     const [categoryCheck] = await pool.execute(
-      'SELECT id, title FROM categories WHERE id = ? AND isActive = 1',
-      [categoryId]
+      'SELECT id, title FROM categories WHERE id = ? AND customer_id = ? AND isActive = 1',
+      [categoryId, req.customer_id]
     );
 
     if (categoryCheck.length === 0) {
@@ -623,7 +1076,7 @@ app.get('/categories/:categoryId/products', async (req, res) => {
       });
     }
 
-    // Get products for the category
+    // Get products for the category and customer
     const [products] = await pool.execute(
       `SELECT 
         id, category_id, title, subtitle, price, reseller_price, stock, 
@@ -631,9 +1084,9 @@ app.get('/categories/:categoryId/products', async (req, res) => {
         isWarrenty, warrenty_text, primary_color, secondary_color, 
         created_at, priority, discount_percent
       FROM products 
-      WHERE category_id = ? AND isActive = 1 
+      WHERE category_id = ? AND customer_id = ? AND isActive = 1 
       ORDER BY priority DESC, title ASC`,
-      [categoryId]
+      [categoryId, req.customer_id]
     );
 
     res.json({
@@ -657,6 +1110,14 @@ app.get('/categories/:categoryId/products', async (req, res) => {
 // Get single product by ID endpoint
 app.get('/products/:productId', async (req, res) => {
   try {
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
     const productId = req.params.productId;
 
     // Validate product ID
@@ -667,7 +1128,7 @@ app.get('/products/:productId', async (req, res) => {
       });
     }
 
-    // Get product details
+    // Get product details for specific customer
     const [products] = await pool.execute(
       `SELECT 
         p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, p.stock, 
@@ -677,8 +1138,8 @@ app.get('/products/:productId', async (req, res) => {
         c.title as category_title, c.category as category_slug
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
-      WHERE p.id = ? AND p.isActive = 1`,
-      [productId]
+      WHERE p.id = ? AND p.customer_id = ? AND p.isActive = 1`,
+      [productId, req.customer_id]
     );
 
     if (products.length === 0) {
@@ -814,8 +1275,8 @@ app.post('/purchase', authenticateToken, async (req, res) => {
 
     // Create transaction
     const [transactionResult] = await connection.execute(
-      'INSERT INTO transactions (bill_number, user_id, total_price) VALUES (?, ?, ?)',
-      [billNumber, userId, totalPrice]
+      'INSERT INTO transactions (customer_id, bill_number, user_id, total_price) VALUES (?, ?, ?, ?)',
+      [req.customer_id, billNumber, userId, totalPrice]
     );
 
     const transactionId = transactionResult.insertId;
@@ -827,8 +1288,8 @@ app.post('/purchase', authenticateToken, async (req, res) => {
       
       // Create transaction item
       const [itemResult] = await connection.execute(
-        'INSERT INTO transaction_items (bill_number, transaction_id, product_id, quantity, price, license_id) VALUES (?, ?, ?, 1, ?, ?)',
-        [billNumber, transactionId, product_id, product.price, stockItem.id]
+        'INSERT INTO transaction_items (customer_id, bill_number, transaction_id, product_id, quantity, price, license_id) VALUES (?, ?, ?, ?, 1, ?, ?)',
+        [req.customer_id, billNumber, transactionId, product_id, product.price, stockItem.id]
       );
 
       // Mark stock as sold
@@ -895,7 +1356,15 @@ app.post('/purchase', authenticateToken, async (req, res) => {
 // Get all products endpoint
 app.get('/products', async (req, res) => {
   try {
-    // Get all products with category information
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    // Get all products with category information for specific customer
     const [products] = await pool.execute(
       `SELECT 
         p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, p.stock, 
@@ -905,8 +1374,9 @@ app.get('/products', async (req, res) => {
         c.title as category_title, c.category as category_slug
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
-      WHERE p.isActive = 1
-      ORDER BY p.priority DESC, p.title ASC`
+      WHERE 1=1 AND p.isActive = 1
+      ORDER BY p.priority DESC, p.title ASC`,
+      [req.customer_id]
     );
 
     res.json({
@@ -1215,6 +1685,14 @@ app.get('/admin/dashboard', authenticateToken, requirePermission('can_view_repor
 // Get statistics endpoint
 app.get('/get-stats', async (req, res) => {
   try {
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
     // Check database connection status
     let dbStatus = '24/7';
     let dbMessage = 'Database is running normally';
@@ -1228,21 +1706,24 @@ app.get('/get-stats', async (req, res) => {
       console.error('Database connection error:', dbError);
     }
 
-    // Get total users count
+    // Get total users count for specific customer
     const [userCountResult] = await pool.execute(
-      'SELECT COUNT(*) as total_users FROM users'
+      'SELECT COUNT(*) as total_users FROM users WHERE customer_id = ?',
+      [req.customer_id]
     );
     const totalUsers = userCountResult[0].total_users;
 
-    // Get total sold items count (from transaction_items)
+    // Get total sold items count (from transaction_items) for specific customer
     const [soldItemsResult] = await pool.execute(
-      'SELECT COUNT(*) as total_sold FROM transaction_items'
+      'SELECT COUNT(*) as total_sold FROM transaction_items WHERE customer_id = ?',
+      [req.customer_id]
     );
     const totalSoldItems = soldItemsResult[0].total_sold;
 
-    // Get unsold product stock count
+    // Get unsold product stock count for specific customer
     const [unsoldStockResult] = await pool.execute(
-      'SELECT COUNT(*) as total_unsold FROM product_stock WHERE sold = 0'
+      'SELECT COUNT(*) as total_unsold FROM product_stock WHERE customer_id = ? AND sold = 0',
+      [req.customer_id]
     );
     const totalUnsoldStock = unsoldStockResult[0].total_unsold;
 
@@ -1281,10 +1762,3690 @@ app.get('/get-stats', async (req, res) => {
   }
 });
 
+// Get expired day endpoint
+app.get('/getexpiredday', async (req, res) => {
+  try {
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    // Get expired day from auth_sites table for this customer
+    const [sites] = await pool.execute(
+      'SELECT expiredDay FROM auth_sites WHERE customer_id = ? ORDER BY id ASC LIMIT 1',
+      [req.customer_id]
+    );
+
+    if (sites.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบข้อมูลวันหมดอายุสำหรับลูกค้านี้'
+      });
+    }
+
+    const expiredDay = sites[0].expiredDay;
+
+    res.json({
+      success: true,
+      message: 'ดึงข้อมูลวันหมดอายุสำเร็จ',
+      expiredDay: expiredDay,
+      customer_id: req.customer_id
+    });
+
+  } catch (error) {
+    console.error('Get expired day error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Redeem angpao endpoint
+app.post('/redeem-angpao', authenticateToken, async (req, res) => {
+  try {
+    // Check if customer_id matches token
+    if (req.user.customer_id !== req.customer_id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied - customer mismatch'
+      });
+    }
+
+    const { link } = req.body;
+
+    if (!link) {
+      return res.status(400).json({ success: false, error: 'กรุณาระบุ link' });
+    }
+
+    // ดึงเบอร์โทรจากตาราง config สำหรับ customer นี้
+    const [configRows] = await pool.execute(
+      'SELECT owner_phone FROM config WHERE customer_id = ? ORDER BY id ASC LIMIT 1',
+      [req.customer_id]
+    );
+    
+    if (!configRows.length) {
+      return res.status(400).json({ success: false, error: 'ไม่พบเบอร์โทรในตาราง config' });
+    }
+
+    const phone = configRows[0].owner_phone;
+
+    // ดึงข้อมูลผู้ใช้ปัจจุบัน
+    const [user] = await pool.execute(
+      "SELECT id, money FROM users WHERE id = ? AND customer_id = ?",
+      [req.user.id, req.customer_id]
+    );
+    
+    if (user.length === 0) {
+      return res.status(404).json({ success: false, error: 'ไม่พบผู้ใช้' });
+    }
+
+    // ดึง campaign ID จาก link
+    let campaignId = link;
+
+    if (link.includes('gift.truemoney.com/campaign/?v=')) {
+      const urlParams = new URL(link).searchParams;
+      campaignId = urlParams.get('v');
+    } else if (link.includes('v=')) {
+      const match = link.match(/[?&]v=([^&]+)/);
+      if (match) {
+        campaignId = match[1];
+      }
+    }
+
+    if (!campaignId) {
+      return res.status(400).json({ success: false, error: 'ไม่พบ campaign ID ในลิงก์' });
+    }
+
+    // เรียก API TrueMoney พร้อม retry
+    let data;
+    let lastError;
+    const maxRetries = 3;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`Calling TrueMoney API (attempt ${attempt}/${maxRetries}): https://api.xpluem.com/${campaignId}/${phone}`);
+        
+        const response = await axios.get(`https://api.xpluem.com/${campaignId}/${phone}`, {
+          timeout: 15000, // เพิ่ม timeout เป็น 15 วินาที
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json',
+            'Cache-Control': 'no-cache'
+          },
+          validateStatus: function (status) {
+            return status < 500; // รับ status code น้อยกว่า 500
+          }
+        });
+        
+        data = response.data;
+        console.log(`TrueMoney API Response (attempt ${attempt}):`, data);
+        
+        // ถ้าได้ response แล้วให้ break ออกจาก loop
+        break;
+        
+      } catch (error) {
+        lastError = error;
+        console.error(`TrueMoney API attempt ${attempt} failed:`, error.message);
+        
+        // ถ้าเป็น attempt สุดท้ายให้ throw error
+        if (attempt === maxRetries) {
+          throw error;
+        }
+        
+        // รอ 2 วินาทีก่อนลองใหม่
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+
+    // เริ่ม transaction
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // ตรวจสอบ response data
+      if (!data) {
+        throw new Error('ไม่ได้รับข้อมูลจาก API');
+      }
+
+      const amount = data.data ? parseFloat(data.data.amount) : 0;
+      const status = data.success ? 'success' : 'failed';
+      
+      // ตรวจสอบจำนวนเงิน
+      if (amount <= 0) {
+        throw new Error('จำนวนเงินไม่ถูกต้อง');
+      }
+
+      // ตรวจสอบว่ามีการเติมเงินซ้ำหรือไม่ (ตรวจสอบ campaign ID ใน 24 ชั่วโมงที่ผ่านมา)
+      const [existingTopup] = await connection.execute(
+        'SELECT id FROM topups WHERE user_id = ? AND customer_id = ? AND transaction_ref = ? AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)',
+        [req.user.id, req.customer_id, `Campaign: ${campaignId}`]
+      );
+
+      if (existingTopup.length > 0) {
+        throw new Error('ลิงก์นี้ถูกใช้แล้วใน 24 ชั่วโมงที่ผ่านมา');
+      }
+
+      // บันทึกลงตาราง topups
+      const [topupResult] = await connection.execute(
+        'INSERT INTO topups (customer_id, user_id, amount, method, transaction_ref, status) VALUES (?, ?, ?, ?, ?, ?)',
+        [req.customer_id, req.user.id, amount, 'gift_card', `Campaign: ${campaignId}`, status]
+      );
+
+      // ถ้าสำเร็จ ให้บวกเงิน
+      if (data.success && (data.message === 'รับเงินสำเร็จ' || data.message === 'success')) {
+        const newMoney = parseFloat(user[0].money) + amount;
+        
+        // อัปเดตเงินผู้ใช้
+        const [updateResult] = await connection.execute(
+          'UPDATE users SET money = ? WHERE id = ? AND customer_id = ?',
+          [newMoney, req.user.id, req.customer_id]
+        );
+
+        if (updateResult.affectedRows === 0) {
+          throw new Error('ไม่สามารถอัปเดตเงินผู้ใช้ได้');
+        }
+
+        // อัปเดตสถานะ topup เป็น success
+        await connection.execute(
+          'UPDATE topups SET status = ? WHERE id = ?',
+          ['success', topupResult.insertId]
+        );
+
+        await connection.commit();
+
+        console.log(`Topup successful: Customer ${req.customer_id}, User ${req.user.id}, Amount: ${amount}, New Balance: ${newMoney}`);
+
+        res.json({
+          success: true,
+          message: `เติมเงินสำเร็จ: +${amount} บาท`,
+          amount: amount,
+          new_balance: newMoney,
+          topup_id: topupResult.insertId,
+          campaign_id: campaignId
+        });
+      } else {
+        // อัปเดตสถานะ topup เป็น failed
+        await connection.execute(
+          'UPDATE topups SET status = ? WHERE id = ?',
+          ['failed', topupResult.insertId]
+        );
+
+        await connection.commit();
+
+        console.log(`Topup failed: Customer ${req.customer_id}, User ${req.user.id}, Campaign: ${campaignId}, Message: ${data.message}`);
+
+        res.json({
+          success: false,
+          message: data.message || 'การเติมเงินไม่สำเร็จ',
+          amount: amount,
+          topup_id: topupResult.insertId,
+          campaign_id: campaignId
+        });
+      }
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+
+  } catch (err) {
+    console.error('Redeem angpao error:', err);
+
+    // กรณีเรียก API ล้มเหลว
+    if (err.response) {
+      console.error('API Error Details:', {
+        status: err.response.status,
+        statusText: err.response.statusText,
+        data: err.response.data,
+        url: err.config?.url,
+        user_id: req.user?.id,
+        customer_id: req.customer_id,
+        campaign_id: campaignId
+      });
+
+      let errorMessage = 'ไม่สามารถเชื่อมต่อ API ได้';
+
+      if (err.response.status === 500) {
+        errorMessage = 'API เกิดข้อผิดพลาดภายใน (500) - อาจเป็นเพราะ campaign ID ไม่ถูกต้องหรือ API มีปัญหา';
+      } else if (err.response.status === 404) {
+        errorMessage = 'ไม่พบ campaign ID ที่ระบุ - ลิงก์อาจหมดอายุหรือไม่ถูกต้อง';
+      } else if (err.response.status === 400) {
+        errorMessage = 'ข้อมูลที่ส่งไปไม่ถูกต้อง - ตรวจสอบลิงก์และเบอร์โทร';
+      } else if (err.response.status === 403) {
+        errorMessage = 'ไม่มีสิทธิ์เข้าถึง API - ลิงก์อาจถูกใช้แล้ว';
+      } else if (err.response.status === 429) {
+        errorMessage = 'เรียก API เกินขีดจำกัด - กรุณารอสักครู่แล้วลองใหม่';
+      }
+
+      return res.status(500).json({
+        success: false,
+        error: errorMessage,
+        details: {
+          status: err.response.status,
+          message: err.response.data?.message || err.response.statusText,
+          campaign_id: campaignId
+        }
+      });
+    }
+
+    // กรณี timeout หรือ network error
+    if (err.code === 'ECONNABORTED') {
+      return res.status(500).json({
+        success: false,
+        error: 'การเชื่อมต่อ API หมดเวลา - กรุณาลองใหม่อีกครั้ง',
+        details: {
+          code: err.code,
+          campaign_id: campaignId
+        }
+      });
+    }
+
+    if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
+      return res.status(500).json({
+        success: false,
+        error: 'ไม่สามารถเชื่อมต่อ API ได้ - ตรวจสอบการเชื่อมต่ออินเทอร์เน็ต',
+        details: {
+          code: err.code,
+          campaign_id: campaignId
+        }
+      });
+    }
+
+    // กรณี error อื่นๆ
+    res.status(500).json({
+      success: false,
+      error: err.message || 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ',
+      details: {
+        message: err.message,
+        campaign_id: campaignId,
+        user_id: req.user?.id,
+        customer_id: req.customer_id
+      }
+    });
+  }
+});
 
 
 
 
+
+
+// ==================== PRODUCT MANAGEMENT API ====================
+
+// Get all products for admin (including inactive ones)
+app.get('/admin/products', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    const { 
+      includeInactive = false, 
+      categoryId = null,
+      page = 1,
+      limit = 50,
+      search = '',
+      sortBy = 'priority',
+      sortOrder = 'desc'
+    } = req.query;
+
+    // Parse and validate pagination parameters
+    const parsedPage = parseInt(page, 10) || 1;
+    const parsedLimit = parseInt(limit, 10) || 50;
+
+    // Build base query
+    let query = `
+      SELECT 
+        p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, 
+        p.stock, p.duration, p.image, p.download_link, p.isSpecial, p.featured, 
+        p.isActive, p.isWarrenty, p.warrenty_text, p.primary_color, p.secondary_color, 
+        p.created_at, p.priority, p.discount_percent, p.customer_id,
+        c.title as category_title, c.category as category_slug
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE 1=1
+    `;
+
+    const queryParams = [req.customer_id];
+
+    // Add filters
+    if (!includeInactive || includeInactive === 'false') {
+      query += ' AND p.isActive = 1';
+    }
+
+    if (categoryId && !isNaN(categoryId)) {
+      query += ' AND p.category_id = ?';
+      queryParams.push(parseInt(categoryId));
+    }
+
+    if (search && search.trim() !== '') {
+      query += ' AND (p.title LIKE ? OR p.subtitle LIKE ? OR c.title LIKE ?)';
+      const searchPattern = `%${search.trim()}%`;
+      queryParams.push(searchPattern, searchPattern, searchPattern);
+    }
+
+    // Add sorting
+    const validSortFields = ['priority', 'title', 'price', 'stock', 'created_at', 'category_title'];
+    const validSortOrders = ['asc', 'desc'];
+    
+    const sortField = validSortFields.includes(sortBy) ? sortBy : 'priority';
+    const sortDirection = validSortOrders.includes(sortOrder.toLowerCase()) ? sortOrder.toUpperCase() : 'DESC';
+    
+    if (sortField === 'category_title') {
+      query += ` ORDER BY c.title ${sortDirection}, p.title ASC`;
+    } else {
+      query += ` ORDER BY p.${sortField} ${sortDirection}, p.title ASC`;
+    }
+
+    // Get total count for pagination
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE 1=1
+    `;
+    const countParams = [req.customer_id];
+
+    if (!includeInactive || includeInactive === 'false') {
+      countQuery += ' AND p.isActive = 1';
+    }
+
+    if (categoryId && !isNaN(categoryId)) {
+      countQuery += ' AND p.category_id = ?';
+      countParams.push(parseInt(categoryId));
+    }
+
+    if (search && search.trim() !== '') {
+      countQuery += ' AND (p.title LIKE ? OR p.subtitle LIKE ? OR c.title LIKE ?)';
+      const searchPattern = `%${search.trim()}%`;
+      countParams.push(searchPattern, searchPattern, searchPattern);
+    }
+
+    // Add pagination
+    if (parsedLimit && parsedLimit > 0) {
+      const offset = (parsedPage - 1) * parsedLimit;
+      query += ` LIMIT ${parsedLimit} OFFSET ${offset}`;
+      // Note: Using direct substitution instead of placeholders for LIMIT/OFFSET
+      // because some MySQL2 versions have issues with prepared statements + LIMIT/OFFSET
+    }
+
+    // Debug logging
+    console.log('Admin Products Query Debug:', {
+      customer_id: req.customer_id,
+      queryParams: queryParams,
+      countParams: countParams,
+      query: query,
+      countQuery: countQuery,
+      query_placeholders: (query.match(/\?/g) || []).length,
+      countQuery_placeholders: (countQuery.match(/\?/g) || []).length
+    });
+
+    // Execute queries
+    const [products] = await pool.execute(query, queryParams);
+    const [countResult] = await pool.execute(countQuery, countParams);
+    const total = countResult[0].total;
+
+    res.json({
+      success: true,
+      message: 'Products retrieved successfully',
+      products: products,
+      total: total,
+      page: parsedPage,
+      limit: parsedLimit,
+      totalPages: Math.ceil(total / parsedLimit),
+      filters: {
+        includeInactive: includeInactive === 'true',
+        categoryId: categoryId ? parseInt(categoryId) : null,
+        search: search,
+        sortBy: sortField,
+        sortOrder: sortDirection.toLowerCase()
+      }
+    });
+
+  } catch (error) {
+    console.error('Admin products error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get single product for admin
+app.get('/admin/products/:productId', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { productId } = req.params;
+
+    // Validate product ID
+    if (!productId || isNaN(productId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid product ID is required'
+      });
+    }
+
+    // Get product details
+    const [products] = await pool.execute(
+      `SELECT 
+        p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, 
+        p.stock, p.duration, p.image, p.download_link, p.isSpecial, p.featured, 
+        p.isActive, p.isWarrenty, p.warrenty_text, p.primary_color, p.secondary_color, 
+        p.created_at, p.priority, p.discount_percent, p.customer_id,
+        c.title as category_title, c.category as category_slug, c.parent_id as category_parent_id
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE p.id = ? AND p.customer_id = ?`,
+      [productId, req.customer_id]
+    );
+
+    if (products.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+
+    const product = products[0];
+
+    // Get category hierarchy if category exists
+    if (product.category_id) {
+      const categoryHierarchy = [];
+      let currentCategoryId = product.category_id;
+
+      // Build category hierarchy (breadcrumb)
+      while (currentCategoryId) {
+        const [categoryInfo] = await pool.execute(
+          'SELECT id, title, parent_id FROM categories WHERE id = ? AND customer_id = ?',
+          [currentCategoryId, req.customer_id]
+        );
+
+        if (categoryInfo.length > 0) {
+          categoryHierarchy.unshift(categoryInfo[0]);
+          currentCategoryId = categoryInfo[0].parent_id;
+        } else {
+          break;
+        }
+      }
+
+      product.category_hierarchy = categoryHierarchy;
+    }
+
+    res.json({
+      success: true,
+      message: 'Product retrieved successfully',
+      product: product
+    });
+
+  } catch (error) {
+    console.error('Admin product detail error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get products by category for admin
+app.get('/admin/categories/:categoryId/products', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const { 
+      includeInactive = false, 
+      page = 1,
+      limit = 50 
+    } = req.query;
+
+    // Validate category ID
+    if (!categoryId || isNaN(categoryId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid category ID is required'
+      });
+    }
+
+    // Check if category exists for this customer
+    const [categoryCheck] = await pool.execute(
+      'SELECT id, title FROM categories WHERE id = ? AND customer_id = ?',
+      [categoryId, req.customer_id]
+    );
+
+    if (categoryCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Category not found'
+      });
+    }
+
+    // Build query
+    let query = `
+      SELECT 
+        p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, 
+        p.stock, p.duration, p.image, p.download_link, p.isSpecial, p.featured, 
+        p.isActive, p.isWarrenty, p.warrenty_text, p.primary_color, p.secondary_color, 
+        p.created_at, p.priority, p.discount_percent,
+        c.title as category_title, c.category as category_slug
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE p.category_id = ? AND p.customer_id = ?
+    `;
+
+    const queryParams = [categoryId, req.customer_id];
+
+    if (!includeInactive || includeInactive === 'false') {
+      query += ' AND p.isActive = 1';
+    }
+
+    query += ' ORDER BY p.priority DESC, p.title ASC';
+
+    // Add pagination
+    if (limit && !isNaN(limit)) {
+      const parsedLimitLocal = parseInt(limit, 10);
+      const parsedPageLocal = parseInt(page, 10) || 1;
+      const offset = (parsedPageLocal - 1) * parsedLimitLocal;
+      query += ` LIMIT ${parsedLimitLocal} OFFSET ${offset}`;
+    }
+
+    // Get products
+    const [products] = await pool.execute(query, queryParams);
+
+    // Get total count
+    let countQuery = 'SELECT COUNT(*) as total FROM products WHERE category_id = ? AND customer_id = ?';
+    const countParams = [categoryId, req.customer_id];
+
+    if (!includeInactive || includeInactive === 'false') {
+      countQuery += ' AND isActive = 1';
+    }
+
+    const [countResult] = await pool.execute(countQuery, countParams);
+    const total = countResult[0].total;
+
+    res.json({
+      success: true,
+      message: 'Products retrieved successfully',
+      category: categoryCheck[0],
+      products: products,
+      total: total,
+      page: parseInt(page),
+      limit: parseInt(limit),
+      totalPages: Math.ceil(total / parseInt(limit))
+    });
+
+  } catch (error) {
+    console.error('Admin category products error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Create new product endpoint
+app.post('/admin/products', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const {
+      category_id,
+      title,
+      subtitle,
+      price,
+      reseller_price,
+      stock,
+      duration,
+      image,
+      download_link,
+      isSpecial,
+      featured,
+      isWarrenty,
+      warrenty_text,
+      primary_color,
+      secondary_color,
+      priority,
+      discount_percent
+    } = req.body;
+
+    // Validate required fields
+    if (!category_id || !title || !price) {
+      return res.status(400).json({
+        success: false,
+        message: 'Category ID, title, and price are required'
+      });
+    }
+
+    // Check if category exists for this customer
+    const [categoryCheck] = await pool.execute(
+      'SELECT id FROM categories WHERE id = ? AND customer_id = ? AND isActive = 1',
+      [category_id, req.customer_id]
+    );
+
+    if (categoryCheck.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Category not found or inactive'
+      });
+    }
+
+    // Insert new product
+    const [result] = await pool.execute(
+      `INSERT INTO products (
+        customer_id, category_id, title, subtitle, price, reseller_price, 
+        stock, duration, image, download_link, isSpecial, featured, 
+        isWarrenty, warrenty_text, primary_color, secondary_color, 
+        priority, discount_percent
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        req.customer_id, category_id, title, subtitle || null, price, 
+        reseller_price || null, stock || 0, duration || null, image || null, 
+        download_link || null, isSpecial || 0, featured || 0, isWarrenty || 0, 
+        warrenty_text || null, primary_color || null, secondary_color || null, 
+        priority || 0, discount_percent || 0
+      ]
+    );
+
+    // Get the created product
+    const [newProduct] = await pool.execute(
+      'SELECT * FROM products WHERE id = ?',
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Product created successfully',
+      product: newProduct[0]
+    });
+
+  } catch (error) {
+    console.error('Create product error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Update product endpoint
+app.put('/admin/products/:productId', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const {
+      category_id,
+      title,
+      subtitle,
+      price,
+      reseller_price,
+      stock,
+      duration,
+      image,
+      download_link,
+      isSpecial,
+      featured,
+      isWarrenty,
+      warrenty_text,
+      primary_color,
+      secondary_color,
+      priority,
+      discount_percent,
+      isActive
+    } = req.body;
+
+    // Validate product ID
+    if (!productId || isNaN(productId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid product ID is required'
+      });
+    }
+
+    // Check if product exists for this customer
+    const [productCheck] = await pool.execute(
+      'SELECT id FROM products WHERE id = ? AND customer_id = ?',
+      [productId, req.customer_id]
+    );
+
+    if (productCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+
+    // If category_id is provided, check if it exists
+    if (category_id) {
+      const [categoryCheck] = await pool.execute(
+        'SELECT id FROM categories WHERE id = ? AND customer_id = ? AND isActive = 1',
+        [category_id, req.customer_id]
+      );
+
+      if (categoryCheck.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Category not found or inactive'
+        });
+      }
+    }
+
+    // Build update query dynamically
+    const updateFields = [];
+    const updateValues = [];
+
+    if (category_id !== undefined) {
+      updateFields.push('category_id = ?');
+      updateValues.push(category_id);
+    }
+    if (title !== undefined) {
+      updateFields.push('title = ?');
+      updateValues.push(title);
+    }
+    if (subtitle !== undefined) {
+      updateFields.push('subtitle = ?');
+      updateValues.push(subtitle);
+    }
+    if (price !== undefined) {
+      updateFields.push('price = ?');
+      updateValues.push(price);
+    }
+    if (reseller_price !== undefined) {
+      updateFields.push('reseller_price = ?');
+      updateValues.push(reseller_price);
+    }
+    if (stock !== undefined) {
+      updateFields.push('stock = ?');
+      updateValues.push(stock);
+    }
+    if (duration !== undefined) {
+      updateFields.push('duration = ?');
+      updateValues.push(duration);
+    }
+    if (image !== undefined) {
+      updateFields.push('image = ?');
+      updateValues.push(image);
+    }
+    if (download_link !== undefined) {
+      updateFields.push('download_link = ?');
+      updateValues.push(download_link);
+    }
+    if (isSpecial !== undefined) {
+      updateFields.push('isSpecial = ?');
+      updateValues.push(isSpecial);
+    }
+    if (featured !== undefined) {
+      updateFields.push('featured = ?');
+      updateValues.push(featured);
+    }
+    if (isWarrenty !== undefined) {
+      updateFields.push('isWarrenty = ?');
+      updateValues.push(isWarrenty);
+    }
+    if (warrenty_text !== undefined) {
+      updateFields.push('warrenty_text = ?');
+      updateValues.push(warrenty_text);
+    }
+    if (primary_color !== undefined) {
+      updateFields.push('primary_color = ?');
+      updateValues.push(primary_color);
+    }
+    if (secondary_color !== undefined) {
+      updateFields.push('secondary_color = ?');
+      updateValues.push(secondary_color);
+    }
+    if (priority !== undefined) {
+      updateFields.push('priority = ?');
+      updateValues.push(priority);
+    }
+    if (discount_percent !== undefined) {
+      updateFields.push('discount_percent = ?');
+      updateValues.push(discount_percent);
+    }
+    if (isActive !== undefined) {
+      updateFields.push('isActive = ?');
+      updateValues.push(isActive);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No fields to update'
+      });
+    }
+
+    updateValues.push(productId);
+
+    // Update product
+    await pool.execute(
+      `UPDATE products SET ${updateFields.join(', ')} WHERE id = ? AND customer_id = ?`,
+      [...updateValues, req.customer_id]
+    );
+
+    // Get updated product
+    const [updatedProduct] = await pool.execute(
+      'SELECT * FROM products WHERE id = ? AND customer_id = ?',
+      [productId, req.customer_id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Product updated successfully',
+      product: updatedProduct[0]
+    });
+
+  } catch (error) {
+    console.error('Update product error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Delete product endpoint (force delete with all related data)
+app.delete('/admin/products/:productId', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const { force = false } = req.query;
+
+    // Validate product ID
+    if (!productId || isNaN(productId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid product ID is required'
+      });
+    }
+
+    // Check if product exists for this customer
+    const [productCheck] = await pool.execute(
+      'SELECT id, title FROM products WHERE id = ? AND customer_id = ?',
+      [productId, req.customer_id]
+    );
+
+    if (productCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+
+    if (force === 'true' || force === true) {
+      // Force delete - remove all related data first
+      await deleteProductWithRelatedData(productId, req.customer_id);
+      
+      res.json({
+        success: true,
+        message: 'Product and all related data deleted successfully (force delete)',
+        product: {
+          id: productCheck[0].id,
+          title: productCheck[0].title
+        }
+      });
+    } else {
+      // Normal delete with checks
+      // Check if product has stock
+      const [stockCheck] = await pool.execute(
+        'SELECT COUNT(*) as count FROM product_stock WHERE product_id = ? AND customer_id = ?',
+        [productId, req.customer_id]
+      );
+
+      if (stockCheck[0].count > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot delete product with stock. Use ?force=true to force delete or remove stock first.',
+          stock_count: stockCheck[0].count
+        });
+      }
+
+      // Normal delete (no stock)
+      await pool.execute(
+        'DELETE FROM products WHERE id = ? AND customer_id = ?',
+        [productId, req.customer_id]
+      );
+
+      res.json({
+        success: true,
+        message: 'Product deleted successfully',
+        product: {
+          id: productCheck[0].id,
+          title: productCheck[0].title
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error('Delete product error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Helper function to delete product with all related data
+async function deleteProductWithRelatedData(productId, customerId) {
+  try {
+    // Get all product_stock IDs for this product
+    const [productStocks] = await pool.execute(
+      'SELECT id FROM product_stock WHERE product_id = ? AND customer_id = ?',
+      [productId, customerId]
+    );
+
+    // Delete transaction_items that reference these product_stock entries
+    for (const stock of productStocks) {
+      await pool.execute(
+        'DELETE FROM transaction_items WHERE license_id = ?',
+        [stock.id]
+      );
+    }
+
+    // Now we can safely delete product_stock
+    await pool.execute(
+      'DELETE FROM product_stock WHERE product_id = ? AND customer_id = ?',
+      [productId, customerId]
+    );
+
+    // Finally, delete the product itself
+    await pool.execute(
+      'DELETE FROM products WHERE id = ? AND customer_id = ?',
+      [productId, customerId]
+    );
+
+  } catch (error) {
+    console.error('Error in deleteProductWithRelatedData:', error);
+    throw error;
+  }
+}
+
+// ==================== CATEGORY MANAGEMENT API ====================
+
+// Get all categories for admin (including inactive ones)
+app.get('/admin/categories', authenticateToken, requirePermission('can_edit_categories'), async (req, res) => {
+  try {
+    const { 
+      includeInactive = false, 
+      flat = false,
+      page = 1,
+      limit = 50 
+    } = req.query;
+
+    // Build query based on includeInactive parameter
+    let query = `
+      SELECT 
+        id, parent_id, title, subtitle, image, category, featured, 
+        isActive, priority, created_at, customer_id
+      FROM categories 
+      WHERE customer_id = ?
+    `;
+    
+    if (!includeInactive || includeInactive === 'false') {
+      query += ' AND isActive = 1';
+    }
+    
+    query += ' ORDER BY priority DESC, title ASC';
+
+    // Add pagination if not flat structure
+    const queryParams = [req.customer_id];
+    if (flat === 'true' && limit && !isNaN(limit)) {
+      const offset = (parseInt(page) - 1) * parseInt(limit);
+      query += ' LIMIT ? OFFSET ?';
+      queryParams.push(parseInt(limit), parseInt(offset));
+    }
+
+    const [categories] = await pool.execute(query, queryParams);
+
+    // If flat structure requested, return simple array
+    if (flat === 'true') {
+      // Get total count for pagination
+      let countQuery = 'SELECT COUNT(*) as total FROM categories WHERE customer_id = ?';
+      const countParams = [req.customer_id];
+      if (!includeInactive || includeInactive === 'false') {
+        countQuery += ' AND isActive = 1';
+      }
+      
+      const [countResult] = await pool.execute(countQuery, countParams);
+      const total = countResult[0].total;
+
+      return res.json({
+        success: true,
+        message: 'Categories retrieved successfully',
+        categories: categories,
+        total: total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(total / parseInt(limit))
+      });
+    }
+
+    // Build hierarchical structure
+    const categoryMap = new Map();
+    const rootCategories = [];
+
+    // First pass: create map of all categories
+    categories.forEach(category => {
+      categoryMap.set(category.id, {
+        ...category,
+        children: []
+      });
+    });
+
+    // Second pass: build hierarchy
+    categories.forEach(category => {
+      const categoryObj = categoryMap.get(category.id);
+      
+      if (category.parent_id === null) {
+        // Root category
+        rootCategories.push(categoryObj);
+      } else {
+        // Child category
+        const parent = categoryMap.get(category.parent_id);
+        if (parent) {
+          parent.children.push(categoryObj);
+        }
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Categories retrieved successfully',
+      categories: rootCategories,
+      total: categories.length
+    });
+
+  } catch (error) {
+    console.error('Admin categories error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get single category for admin
+app.get('/admin/categories/:categoryId', authenticateToken, requirePermission('can_edit_categories'), async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+
+    // Validate category ID
+    if (!categoryId || isNaN(categoryId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid category ID is required'
+      });
+    }
+
+    // Get category details
+    const [categories] = await pool.execute(
+      `SELECT 
+        id, parent_id, title, subtitle, image, category, featured, 
+        isActive, priority, created_at, customer_id
+      FROM categories 
+      WHERE id = ? AND customer_id = ?`,
+      [categoryId, req.customer_id]
+    );
+
+    if (categories.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Category not found'
+      });
+    }
+
+    const category = categories[0];
+
+    // Get parent category info if exists
+    if (category.parent_id) {
+      const [parentCategory] = await pool.execute(
+        'SELECT id, title FROM categories WHERE id = ? AND customer_id = ?',
+        [category.parent_id, req.customer_id]
+      );
+      
+      if (parentCategory.length > 0) {
+        category.parent_info = parentCategory[0];
+      }
+    }
+
+    // Get child categories
+    const [childCategories] = await pool.execute(
+      'SELECT id, title, isActive FROM categories WHERE parent_id = ? AND customer_id = ? ORDER BY priority DESC, title ASC',
+      [categoryId, req.customer_id]
+    );
+
+    category.children = childCategories;
+
+    // Get products count in this category
+    const [productCount] = await pool.execute(
+      'SELECT COUNT(*) as count FROM products WHERE category_id = ? AND customer_id = ?',
+      [categoryId, req.customer_id]
+    );
+
+    category.products_count = productCount[0].count;
+
+    res.json({
+      success: true,
+      message: 'Category retrieved successfully',
+      category: category
+    });
+
+  } catch (error) {
+    console.error('Admin category detail error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Create new category endpoint
+app.post('/admin/categories', authenticateToken, requirePermission('can_edit_categories'), async (req, res) => {
+  try {
+    const {
+      parent_id,
+      title,
+      subtitle,
+      image,
+      category,
+      featured,
+      priority
+    } = req.body;
+
+    // Validate required fields
+    if (!title) {
+      return res.status(400).json({
+        success: false,
+        message: 'Title is required'
+      });
+    }
+
+    // If parent_id is provided, check if parent category exists
+    if (parent_id) {
+      const [parentCheck] = await pool.execute(
+        'SELECT id FROM categories WHERE id = ? AND customer_id = ? AND isActive = 1',
+        [parent_id, req.customer_id]
+      );
+
+      if (parentCheck.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Parent category not found or inactive'
+        });
+      }
+    }
+
+    // Check if category slug already exists (if provided)
+    if (category) {
+      const [categoryCheck] = await pool.execute(
+        'SELECT id FROM categories WHERE category = ? AND customer_id = ?',
+        [category, req.customer_id]
+      );
+
+      if (categoryCheck.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Category slug already exists'
+        });
+      }
+    }
+
+    // Insert new category
+    const [result] = await pool.execute(
+      `INSERT INTO categories (
+        customer_id, parent_id, title, subtitle, image, category, 
+        featured, priority
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        req.customer_id, parent_id || null, title, subtitle || null, 
+        image || null, category || null, featured || 0, priority || 0
+      ]
+    );
+
+    // Get the created category
+    const [newCategory] = await pool.execute(
+      'SELECT * FROM categories WHERE id = ?',
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Category created successfully',
+      category: newCategory[0]
+    });
+
+  } catch (error) {
+    console.error('Create category error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Update category endpoint
+app.put('/admin/categories/:categoryId', authenticateToken, requirePermission('can_edit_categories'), async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const {
+      parent_id,
+      title,
+      subtitle,
+      image,
+      category,
+      featured,
+      priority,
+      isActive
+    } = req.body;
+
+    // Validate category ID
+    if (!categoryId || isNaN(categoryId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid category ID is required'
+      });
+    }
+
+    // Check if category exists for this customer
+    const [categoryCheck] = await pool.execute(
+      'SELECT id FROM categories WHERE id = ? AND customer_id = ?',
+      [categoryId, req.customer_id]
+    );
+
+    if (categoryCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Category not found'
+      });
+    }
+
+    // If parent_id is provided, check if parent category exists and prevent circular reference
+    if (parent_id) {
+      if (parent_id == categoryId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Category cannot be its own parent'
+        });
+      }
+
+      const [parentCheck] = await pool.execute(
+        'SELECT id FROM categories WHERE id = ? AND customer_id = ? AND isActive = 1',
+        [parent_id, req.customer_id]
+      );
+
+      if (parentCheck.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Parent category not found or inactive'
+        });
+      }
+    }
+
+    // If category slug is provided, check if it already exists
+    if (category) {
+      const [slugCheck] = await pool.execute(
+        'SELECT id FROM categories WHERE category = ? AND customer_id = ? AND id != ?',
+        [category, req.customer_id, categoryId]
+      );
+
+      if (slugCheck.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Category slug already exists'
+        });
+      }
+    }
+
+    // Build update query dynamically
+    const updateFields = [];
+    const updateValues = [];
+
+    if (parent_id !== undefined) {
+      updateFields.push('parent_id = ?');
+      updateValues.push(parent_id);
+    }
+    if (title !== undefined) {
+      updateFields.push('title = ?');
+      updateValues.push(title);
+    }
+    if (subtitle !== undefined) {
+      updateFields.push('subtitle = ?');
+      updateValues.push(subtitle);
+    }
+    if (image !== undefined) {
+      updateFields.push('image = ?');
+      updateValues.push(image);
+    }
+    if (category !== undefined) {
+      updateFields.push('category = ?');
+      updateValues.push(category);
+    }
+    if (featured !== undefined) {
+      updateFields.push('featured = ?');
+      updateValues.push(featured);
+    }
+    if (priority !== undefined) {
+      updateFields.push('priority = ?');
+      updateValues.push(priority);
+    }
+    if (isActive !== undefined) {
+      updateFields.push('isActive = ?');
+      updateValues.push(isActive);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No fields to update'
+      });
+    }
+
+    updateValues.push(categoryId);
+
+    // Update category
+    await pool.execute(
+      `UPDATE categories SET ${updateFields.join(', ')} WHERE id = ? AND customer_id = ?`,
+      [...updateValues, req.customer_id]
+    );
+
+    // Get updated category
+    const [updatedCategory] = await pool.execute(
+      'SELECT * FROM categories WHERE id = ? AND customer_id = ?',
+      [categoryId, req.customer_id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Category updated successfully',
+      category: updatedCategory[0]
+    });
+
+  } catch (error) {
+    console.error('Update category error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Delete category endpoint (force delete with all products and sub-categories)
+app.delete('/admin/categories/:categoryId', authenticateToken, requirePermission('can_edit_categories'), async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const { force = false } = req.query;
+
+    // Validate category ID
+    if (!categoryId || isNaN(categoryId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid category ID is required'
+      });
+    }
+
+    // Check if category exists for this customer
+    const [categoryCheck] = await pool.execute(
+      'SELECT id, title FROM categories WHERE id = ? AND customer_id = ?',
+      [categoryId, req.customer_id]
+    );
+
+    if (categoryCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Category not found'
+      });
+    }
+
+    if (force === 'true' || force === true) {
+      // Force delete - remove everything recursively
+      await deleteCategoryRecursive(categoryId, req.customer_id);
+      
+      res.json({
+        success: true,
+        message: 'Category and all related data deleted successfully (force delete)',
+        category: {
+          id: categoryCheck[0].id,
+          title: categoryCheck[0].title
+        }
+      });
+    } else {
+      // Normal delete with checks
+      // Check if category has products
+      const [productsCheck] = await pool.execute(
+        'SELECT COUNT(*) as count FROM products WHERE category_id = ? AND customer_id = ?',
+        [categoryId, req.customer_id]
+      );
+
+      if (productsCheck[0].count > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot delete category with products. Use ?force=true to force delete or move products first.',
+          products_count: productsCheck[0].count
+        });
+      }
+
+      // Check if category has child categories
+      const [childrenCheck] = await pool.execute(
+        'SELECT COUNT(*) as count FROM categories WHERE parent_id = ? AND customer_id = ?',
+        [categoryId, req.customer_id]
+      );
+
+      if (childrenCheck[0].count > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot delete category with child categories. Use ?force=true to force delete or move child categories first.',
+          child_categories_count: childrenCheck[0].count
+        });
+      }
+
+      // Normal delete (no products or children)
+      await pool.execute(
+        'DELETE FROM categories WHERE id = ? AND customer_id = ?',
+        [categoryId, req.customer_id]
+      );
+
+      res.json({
+        success: true,
+        message: 'Category deleted successfully',
+        category: {
+          id: categoryCheck[0].id,
+          title: categoryCheck[0].title
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error('Delete category error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Helper function to recursively delete category and all related data
+async function deleteCategoryRecursive(categoryId, customerId) {
+  try {
+    // Get all child categories
+    const [childCategories] = await pool.execute(
+      'SELECT id FROM categories WHERE parent_id = ? AND customer_id = ?',
+      [categoryId, customerId]
+    );
+
+    // Recursively delete all child categories
+    for (const child of childCategories) {
+      await deleteCategoryRecursive(child.id, customerId);
+    }
+
+    // Get all products in this category
+    const [products] = await pool.execute(
+      'SELECT id FROM products WHERE category_id = ? AND customer_id = ?',
+      [categoryId, customerId]
+    );
+
+    // For each product, delete all related data in the correct order
+    for (const product of products) {
+      // Get all product_stock IDs for this product
+      const [productStocks] = await pool.execute(
+        'SELECT id FROM product_stock WHERE product_id = ? AND customer_id = ?',
+        [product.id, customerId]
+      );
+
+      // Delete transaction_items that reference these product_stock entries
+      for (const stock of productStocks) {
+        await pool.execute(
+          'DELETE FROM transaction_items WHERE license_id = ?',
+          [stock.id]
+        );
+      }
+
+      // Now we can safely delete product_stock
+      await pool.execute(
+        'DELETE FROM product_stock WHERE product_id = ? AND customer_id = ?',
+        [product.id, customerId]
+      );
+    }
+
+    // Delete all products in this category
+    await pool.execute(
+      'DELETE FROM products WHERE category_id = ? AND customer_id = ?',
+      [categoryId, customerId]
+    );
+
+    // Finally, delete the category itself
+    await pool.execute(
+      'DELETE FROM categories WHERE id = ? AND customer_id = ?',
+      [categoryId, customerId]
+    );
+
+  } catch (error) {
+    console.error('Error in deleteCategoryRecursive:', error);
+    throw error;
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ==================== ADMIN REPORTS API ====================
+
+// Get comprehensive overview report for admin
+app.get('/admin/reports/overview', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { period = '30' } = req.query; // days
+    const periodDays = parseInt(period) || 30;
+
+    // Get date range
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - periodDays);
+
+    // Overall statistics
+    const [overallStats] = await pool.execute(`
+      SELECT 
+        (SELECT COUNT(*) FROM users WHERE customer_id = ?) as total_users,
+        (SELECT COUNT(*) FROM products WHERE customer_id = ?) as total_products,
+        (SELECT COUNT(*) FROM categories WHERE customer_id = ?) as total_categories,
+        (SELECT COUNT(*) FROM product_stock WHERE customer_id = ?) as total_stock,
+        (SELECT COUNT(*) FROM product_stock WHERE customer_id = ? AND sold = 0) as available_stock,
+        (SELECT COUNT(*) FROM product_stock WHERE customer_id = ? AND sold = 1) as sold_stock,
+        (SELECT COUNT(*) FROM transactions WHERE customer_id = ?) as total_transactions,
+        (SELECT COALESCE(SUM(total_price), 0) FROM transactions WHERE customer_id = ?) as total_revenue,
+        (SELECT COUNT(*) FROM topups WHERE customer_id = ?) as total_topups,
+        (SELECT COALESCE(SUM(amount), 0) FROM topups WHERE customer_id = ? AND status = 'success') as total_topup_amount
+    `, Array(10).fill(req.customer_id));
+
+    // Recent period statistics
+    const [periodStats] = await pool.execute(`
+      SELECT 
+        (SELECT COUNT(*) FROM users WHERE customer_id = ? AND created_at >= ?) as new_users,
+        (SELECT COUNT(*) FROM transactions WHERE customer_id = ? AND created_at >= ?) as period_transactions,
+        (SELECT COALESCE(SUM(total_price), 0) FROM transactions WHERE customer_id = ? AND created_at >= ?) as period_revenue,
+        (SELECT COUNT(*) FROM topups WHERE customer_id = ? AND created_at >= ?) as period_topups,
+        (SELECT COALESCE(SUM(amount), 0) FROM topups WHERE customer_id = ? AND status = 'success' AND created_at >= ?) as period_topup_amount,
+        (SELECT COUNT(*) FROM product_stock WHERE customer_id = ? AND created_at >= ?) as period_stock_added
+    `, [
+      req.customer_id, startDate,
+      req.customer_id, startDate,
+      req.customer_id, startDate,
+      req.customer_id, startDate,
+      req.customer_id, startDate,
+      req.customer_id, startDate
+    ]);
+
+    // Top selling products
+    const [topProducts] = await pool.execute(`
+      SELECT 
+        p.id,
+        p.title,
+        COUNT(ti.id) as sales_count,
+        SUM(ti.quantity) as total_quantity,
+        SUM(ti.price * ti.quantity) as total_revenue
+      FROM products p
+      LEFT JOIN transaction_items ti ON p.id = ti.product_id
+      LEFT JOIN transactions t ON ti.transaction_id = t.id
+      WHERE p.customer_id = ? AND t.customer_id = ?
+      GROUP BY p.id, p.title
+      ORDER BY sales_count DESC, total_revenue DESC
+      LIMIT 10
+    `, [req.customer_id, req.customer_id]);
+
+    // Recent transactions
+    const [recentTransactions] = await pool.execute(`
+      SELECT 
+        t.id,
+        t.bill_number,
+        u.fullname as username,
+        t.total_price as total_amount,
+        'completed' as status,
+        t.created_at
+      FROM transactions t
+      LEFT JOIN users u ON t.user_id = u.id
+      WHERE t.customer_id = ?
+      ORDER BY t.created_at DESC
+      LIMIT 10
+    `, [req.customer_id]);
+
+    // Daily revenue for the period (for charts)
+    const [dailyRevenue] = await pool.execute(`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as transaction_count,
+        COALESCE(SUM(total_price), 0) as revenue
+      FROM transactions 
+      WHERE customer_id = ? AND created_at >= ?
+      GROUP BY DATE(created_at)
+      ORDER BY date DESC
+      LIMIT 30
+    `, [req.customer_id, startDate]);
+
+    res.json({
+      success: true,
+      period_days: periodDays,
+      overview: {
+        ...overallStats[0],
+        ...periodStats[0]
+      },
+      top_products: topProducts,
+      recent_transactions: recentTransactions,
+      daily_revenue: dailyRevenue
+    });
+
+  } catch (error) {
+    console.error('Admin overview report error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get detailed sales report
+app.get('/admin/reports/sales', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { 
+      start_date = null,
+      end_date = null,
+      page = 1,
+      limit = 50
+    } = req.query;
+
+    const parsedPage = parseInt(page) || 1;
+    const parsedLimit = Math.min(parseInt(limit) || 50, 100);
+    const offset = (parsedPage - 1) * parsedLimit;
+
+    // Build date filters
+    let dateFilter = '';
+    const queryParams = [req.customer_id];
+    
+    if (start_date) {
+      dateFilter += ' AND t.created_at >= ?';
+      queryParams.push(new Date(start_date));
+    }
+    
+    if (end_date) {
+      dateFilter += ' AND t.created_at <= ?';
+      queryParams.push(new Date(end_date));
+    }
+
+
+    // Get detailed sales data
+    const [salesData] = await pool.execute(`
+      SELECT 
+        t.id,
+        t.bill_number,
+        u.fullname as username,
+        u.email,
+        t.total_price as total_amount,
+        t.created_at,
+        GROUP_CONCAT(
+          CONCAT(p.title, ' (', ti.quantity, 'x', ti.price, ')')
+          SEPARATOR '; '
+        ) as items
+      FROM transactions t
+      LEFT JOIN users u ON t.user_id = u.id
+      LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
+      LEFT JOIN products p ON ti.product_id = p.id
+      WHERE t.customer_id = ? ${dateFilter}
+      GROUP BY t.id
+      ORDER BY t.created_at DESC
+      LIMIT ${parsedLimit} OFFSET ${offset}
+    `, queryParams);
+
+    // Get summary statistics
+    const [summary] = await pool.execute(`
+      SELECT 
+        COUNT(*) as total_transactions,
+        COALESCE(SUM(total_price), 0) as total_revenue
+      FROM transactions t
+      WHERE t.customer_id = ? ${dateFilter}
+    `, queryParams); // Use same queryParams without limit/offset
+
+    const totalItems = summary[0].total_transactions;
+    const totalPages = Math.ceil(totalItems / parsedLimit);
+
+    res.json({
+      success: true,
+      data: salesData,
+      summary: summary[0],
+      pagination: {
+        currentPage: parsedPage,
+        totalPages,
+        totalItems,
+        itemsPerPage: parsedLimit,
+        hasNextPage: parsedPage < totalPages,
+        hasPrevPage: parsedPage > 1
+      }
+    });
+
+  } catch (error) {
+    console.error('Sales report error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get products performance report
+app.get('/admin/reports/products', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { 
+      category_id = null,
+      sort_by = 'sales',
+      period = '30'
+    } = req.query;
+
+    const periodDays = parseInt(period) || 30;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - periodDays);
+
+    let categoryFilter = '';
+    const queryParams = [req.customer_id];
+    
+    if (category_id) {
+      categoryFilter = ' AND p.category_id = ?';
+      queryParams.push(category_id);
+    }
+
+    // Get products with sales data
+    const [productsData] = await pool.execute(`
+      SELECT 
+        p.id,
+        p.title,
+        p.price,
+        p.reseller_price,
+        p.stock,
+        p.isActive,
+        c.title as category_title,
+        COALESCE(sales.total_sales, 0) as total_sales,
+        COALESCE(sales.total_quantity, 0) as total_quantity,
+        COALESCE(sales.total_revenue, 0) as total_revenue,
+        COALESCE(period_sales.period_sales, 0) as period_sales,
+        COALESCE(period_sales.period_revenue, 0) as period_revenue,
+        COALESCE(stock_info.total_stock, 0) as total_license_keys,
+        COALESCE(stock_info.available_stock, 0) as available_license_keys,
+        COALESCE(stock_info.sold_stock, 0) as sold_license_keys
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      LEFT JOIN (
+        SELECT 
+          ti.product_id,
+          COUNT(t.id) as total_sales,
+          SUM(ti.quantity) as total_quantity,
+          SUM(ti.price * ti.quantity) as total_revenue
+        FROM transaction_items ti
+        LEFT JOIN transactions t ON ti.transaction_id = t.id
+        WHERE t.customer_id = ?
+        GROUP BY ti.product_id
+      ) sales ON p.id = sales.product_id
+      LEFT JOIN (
+        SELECT 
+          ti.product_id,
+          COUNT(t.id) as period_sales,
+          SUM(ti.price * ti.quantity) as period_revenue
+        FROM transaction_items ti
+        LEFT JOIN transactions t ON ti.transaction_id = t.id
+        WHERE t.customer_id = ? AND t.created_at >= ?
+        GROUP BY ti.product_id
+      ) period_sales ON p.id = period_sales.product_id
+      LEFT JOIN (
+        SELECT 
+          product_id,
+          COUNT(*) as total_stock,
+          SUM(CASE WHEN sold = 0 THEN 1 ELSE 0 END) as available_stock,
+          SUM(CASE WHEN sold = 1 THEN 1 ELSE 0 END) as sold_stock
+        FROM product_stock
+        WHERE customer_id = ?
+        GROUP BY product_id
+      ) stock_info ON p.id = stock_info.product_id
+      WHERE 1=1 ${categoryFilter}
+      ORDER BY ${sort_by === 'revenue' ? 'total_revenue' : 
+                 sort_by === 'stock' ? 'available_license_keys' : 
+                 'total_sales'} DESC
+    `, [req.customer_id, req.customer_id, startDate, req.customer_id]);
+
+    // Get categories summary
+    const [categoriesData] = await pool.execute(`
+      SELECT 
+        c.id,
+        c.title,
+        COUNT(p.id) as products_count,
+        COALESCE(SUM(sales.total_sales), 0) as total_sales,
+        COALESCE(SUM(sales.total_revenue), 0) as total_revenue
+      FROM categories c
+      LEFT JOIN products p ON c.id = p.category_id
+      LEFT JOIN (
+        SELECT 
+          ti.product_id,
+          COUNT(t.id) as total_sales,
+          SUM(ti.price * ti.quantity) as total_revenue
+        FROM transaction_items ti
+        LEFT JOIN transactions t ON ti.transaction_id = t.id
+        WHERE t.customer_id = ?
+        GROUP BY ti.product_id
+      ) sales ON p.id = sales.product_id
+      WHERE 1=1
+      GROUP BY c.id, c.title
+      ORDER BY total_revenue DESC
+    `, [req.customer_id, req.customer_id]);
+
+    res.json({
+      success: true,
+      period_days: periodDays,
+      products: productsData,
+      categories: categoriesData
+    });
+
+  } catch (error) {
+    console.error('Products report error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get users activity report
+app.get('/admin/reports/users', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { 
+      period = '30',
+      page = 1,
+      limit = 50
+    } = req.query;
+
+    const periodDays = parseInt(period) || 30;
+    const parsedPage = parseInt(page) || 1;
+    const parsedLimit = Math.min(parseInt(limit) || 50, 100);
+    const offset = (parsedPage - 1) * parsedLimit;
+
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - periodDays);
+
+    // Get users with activity data
+    const usersQueryParams = [startDate, startDate, req.customer_id, req.customer_id];
+    const [usersData] = await pool.execute(`
+      SELECT 
+        u.id,
+        u.fullname as username,
+        u.email,
+        u.money as balance,
+        CASE WHEN u.role = 'reseller' THEN 1 ELSE 0 END as is_reseller,
+        u.created_at,
+        COALESCE(stats.total_transactions, 0) as total_transactions,
+        COALESCE(stats.total_spent, 0) as total_spent,
+        COALESCE(stats.period_transactions, 0) as period_transactions,
+        COALESCE(stats.period_spent, 0) as period_spent,
+        COALESCE(topup_stats.total_topups, 0) as total_topups,
+        COALESCE(topup_stats.total_topup_amount, 0) as total_topup_amount,
+        stats.last_transaction_date
+      FROM users u
+      LEFT JOIN (
+        SELECT 
+          user_id,
+          COUNT(*) as total_transactions,
+          SUM(total_price) as total_spent,
+          SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as period_transactions,
+          SUM(CASE WHEN created_at >= ? THEN total_price ELSE 0 END) as period_spent,
+          MAX(created_at) as last_transaction_date
+        FROM transactions 
+        WHERE customer_id = ?
+        GROUP BY user_id
+      ) stats ON u.id = stats.user_id
+      LEFT JOIN (
+        SELECT 
+          user_id,
+          COUNT(*) as total_topups,
+          SUM(amount) as total_topup_amount
+        FROM topups 
+        WHERE customer_id = ?
+        GROUP BY user_id
+      ) topup_stats ON u.id = topup_stats.user_id
+      WHERE 1=1
+      ORDER BY total_spent DESC
+      LIMIT ${parsedLimit} OFFSET ${offset}
+    `, usersQueryParams);
+
+    // Get total count
+    const [countResult] = await pool.execute(
+      'SELECT COUNT(*) as total FROM users WHERE customer_id = ?',
+      [req.customer_id]
+    );
+
+    const totalItems = countResult[0].total;
+    const totalPages = Math.ceil(totalItems / parsedLimit);
+
+    // Get summary statistics
+    const [summary] = await pool.execute(`
+      SELECT 
+        COUNT(*) as total_users,
+        COUNT(CASE WHEN created_at >= ? THEN 1 END) as new_users_period,
+        COUNT(CASE WHEN role = 'reseller' THEN 1 END) as total_resellers,
+        COALESCE(SUM(money), 0) as total_balance
+      FROM users
+      WHERE customer_id = ?
+    `, [startDate, req.customer_id]);
+
+    res.json({
+      success: true,
+      period_days: periodDays,
+      data: usersData,
+      summary: summary[0],
+      pagination: {
+        currentPage: parsedPage,
+        totalPages,
+        totalItems,
+        itemsPerPage: parsedLimit,
+        hasNextPage: parsedPage < totalPages,
+        hasPrevPage: parsedPage > 1
+      }
+    });
+
+  } catch (error) {
+    console.error('Users report error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get topups report
+app.get('/admin/reports/topups', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { 
+      start_date = null,
+      end_date = null,
+      status = null,
+      method = null,
+      page = 1,
+      limit = 50
+    } = req.query;
+
+    const parsedPage = parseInt(page) || 1;
+    const parsedLimit = Math.min(parseInt(limit) || 50, 100);
+    const offset = (parsedPage - 1) * parsedLimit;
+
+    // Build filters
+    let filters = '';
+    const queryParams = [req.customer_id];
+    
+    if (start_date) {
+      filters += ' AND t.created_at >= ?';
+      queryParams.push(new Date(start_date));
+    }
+    
+    if (end_date) {
+      filters += ' AND t.created_at <= ?';
+      queryParams.push(new Date(end_date));
+    }
+
+    if (status) {
+      filters += ' AND t.status = ?';
+      queryParams.push(status);
+    }
+
+    if (method) {
+      filters += ' AND t.method = ?';
+      queryParams.push(method);
+    }
+
+    // Get topups data
+    const [topupsData] = await pool.execute(`
+      SELECT 
+        t.id,
+        u.fullname as username,
+        u.email,
+        t.amount,
+        t.method,
+        t.transaction_ref,
+        t.created_at,
+        t.updated_at
+      FROM topups t
+      LEFT JOIN users u ON t.user_id = u.id
+      WHERE t.customer_id = ? ${filters}
+      ORDER BY t.created_at DESC
+      LIMIT ${parsedLimit} OFFSET ${offset}
+    `, queryParams);
+
+    // Get summary statistics
+    const [summary] = await pool.execute(`
+      SELECT 
+        COUNT(*) as total_topups,
+        COALESCE(SUM(CASE WHEN status = 'success' THEN amount ELSE 0 END), 0) as total_success_amount,
+        COALESCE(SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END), 0) as total_pending_amount,
+        COALESCE(SUM(CASE WHEN status = 'failed' THEN amount ELSE 0 END), 0) as total_failed_amount,
+        COUNT(CASE WHEN status = 'success' THEN 1 END) as success_count,
+        COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_count,
+        COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_count
+      FROM topups t
+      WHERE t.customer_id = ? ${filters}
+    `, queryParams); // Use same queryParams without limit/offset
+
+    // Get payment methods summary
+    const [methodsSummary] = await pool.execute(`
+      SELECT 
+        method,
+        COUNT(*) as count,
+        COALESCE(SUM(CASE WHEN status = 'success' THEN amount ELSE 0 END), 0) as success_amount
+      FROM topups t
+      WHERE t.customer_id = ? ${filters}
+      GROUP BY method
+      ORDER BY success_amount DESC
+    `, queryParams); // Use same queryParams without limit/offset
+
+    const totalItems = summary[0].total_topups;
+    const totalPages = Math.ceil(totalItems / parsedLimit);
+
+    res.json({
+      success: true,
+      data: topupsData,
+      summary: summary[0],
+      methods_summary: methodsSummary,
+      pagination: {
+        currentPage: parsedPage,
+        totalPages,
+        totalItems,
+        itemsPerPage: parsedLimit,
+        hasNextPage: parsedPage < totalPages,
+        hasPrevPage: parsedPage > 1
+      }
+    });
+
+  } catch (error) {
+    console.error('Topups report error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// ==================== STOCK MANAGEMENT API ====================
+
+// Get all product stock with pagination and filters
+app.get('/admin/stock', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { 
+      productId = null,
+      soldStatus = null, // 'sold', 'unsold', or null for all
+      page = 1,
+      limit = 50,
+      search = '',
+      sortBy = 'created_at',
+      sortOrder = 'desc'
+    } = req.query;
+
+    // Parse and validate pagination parameters
+    const parsedPage = parseInt(page, 10) || 1;
+    const parsedLimit = Math.min(parseInt(limit, 10) || 50, 100); // Max 100 per page
+    const offset = (parsedPage - 1) * parsedLimit;
+
+    // Build base query
+    let query = `
+      SELECT 
+        ps.id, ps.product_id, ps.license_key, ps.sold, ps.created_at,
+        p.title as product_title, p.price, p.category_id,
+        c.title as category_title
+      FROM product_stock ps
+      LEFT JOIN products p ON ps.product_id = p.id
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE 1=1
+    `;
+
+    const queryParams = [req.customer_id];
+
+    // Add filters
+    if (productId && !isNaN(productId)) {
+      query += ' AND ps.product_id = ?';
+      queryParams.push(parseInt(productId));
+    }
+
+    if (soldStatus === 'sold') {
+      query += ' AND ps.sold = 1';
+    } else if (soldStatus === 'unsold') {
+      query += ' AND ps.sold = 0';
+    }
+
+    if (search && search.trim() !== '') {
+      query += ' AND (ps.license_key LIKE ? OR p.title LIKE ? OR c.title LIKE ?)';
+      const searchPattern = `%${search.trim()}%`;
+      queryParams.push(searchPattern, searchPattern, searchPattern);
+    }
+
+    // Add sorting
+    const validSortFields = ['created_at', 'license_key', 'product_title', 'sold'];
+    const validSortOrders = ['asc', 'desc'];
+    
+    const finalSortBy = validSortFields.includes(sortBy) ? sortBy : 'created_at';
+    const finalSortOrder = validSortOrders.includes(sortOrder.toLowerCase()) ? sortOrder.toLowerCase() : 'desc';
+    
+    if (finalSortBy === 'product_title') {
+      query += ` ORDER BY p.title ${finalSortOrder}`;
+    } else {
+      query += ` ORDER BY ps.${finalSortBy} ${finalSortOrder}`;
+    }
+
+    // Add pagination
+    query += ' LIMIT ? OFFSET ?';
+    queryParams.push(parsedLimit, offset);
+
+    // Get stock data
+    const [stocks] = await pool.execute(query, queryParams);
+
+    // Get total count for pagination
+    let countQuery = `
+      SELECT COUNT(*) as total 
+      FROM product_stock ps
+      LEFT JOIN products p ON ps.product_id = p.id
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE 1=1
+    `;
+    
+    const countParams = [req.customer_id];
+
+    if (productId && !isNaN(productId)) {
+      countQuery += ' AND ps.product_id = ?';
+      countParams.push(parseInt(productId));
+    }
+
+    if (soldStatus === 'sold') {
+      countQuery += ' AND ps.sold = 1';
+    } else if (soldStatus === 'unsold') {
+      countQuery += ' AND ps.sold = 0';
+    }
+
+    if (search && search.trim() !== '') {
+      countQuery += ' AND (ps.license_key LIKE ? OR p.title LIKE ? OR c.title LIKE ?)';
+      const searchPattern = `%${search.trim()}%`;
+      countParams.push(searchPattern, searchPattern, searchPattern);
+    }
+
+    const [countResult] = await pool.execute(countQuery, countParams);
+    const totalItems = countResult[0].total;
+    const totalPages = Math.ceil(totalItems / parsedLimit);
+
+    res.json({
+      success: true,
+      data: stocks,
+      pagination: {
+        currentPage: parsedPage,
+        totalPages,
+        totalItems,
+        itemsPerPage: parsedLimit,
+        hasNextPage: parsedPage < totalPages,
+        hasPrevPage: parsedPage > 1
+      }
+    });
+
+  } catch (error) {
+    console.error('Get stock error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get stock for specific product
+app.get('/admin/stock/:productId', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { productId } = req.params;
+
+    // Validate product ID
+    if (!productId || isNaN(productId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid product ID is required'
+      });
+    }
+
+    // Check if product exists for this customer
+    const [productCheck] = await pool.execute(
+      'SELECT id, title FROM products WHERE id = ? AND customer_id = ?',
+      [productId, req.customer_id]
+    );
+
+    if (productCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+
+    // Get stock for this product
+    const [stocks] = await pool.execute(`
+      SELECT 
+        ps.id, ps.product_id, ps.license_key, ps.sold, ps.created_at,
+        p.title as product_title, p.price
+      FROM product_stock ps
+      LEFT JOIN products p ON ps.product_id = p.id
+      WHERE ps.product_id = ? AND ps.customer_id = ?
+      ORDER BY ps.created_at DESC
+    `, [productId, req.customer_id]);
+
+    // Get summary
+    const [summary] = await pool.execute(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN sold = 0 THEN 1 ELSE 0 END) as available,
+        SUM(CASE WHEN sold = 1 THEN 1 ELSE 0 END) as sold
+      FROM product_stock 
+      WHERE product_id = ? AND customer_id = ?
+    `, [productId, req.customer_id]);
+
+    res.json({
+      success: true,
+      product: productCheck[0],
+      stocks,
+      summary: summary[0]
+    });
+
+  } catch (error) {
+    console.error('Get product stock error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Add new license key to stock
+app.post('/admin/stock', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { product_id, license_key } = req.body;
+
+    // Validate required fields
+    if (!product_id || !license_key) {
+      return res.status(400).json({
+        success: false,
+        message: 'Product ID and license key are required'
+      });
+    }
+
+    // Check if product exists for this customer
+    const [productCheck] = await pool.execute(
+      'SELECT id, title FROM products WHERE id = ? AND customer_id = ?',
+      [product_id, req.customer_id]
+    );
+
+    if (productCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+
+    // Check if license key already exists for this product
+    const [keyCheck] = await pool.execute(`
+      SELECT id 
+      FROM product_stock 
+      WHERE license_key = ? AND product_id = ? AND customer_id = ?
+    `, [license_key, product_id, req.customer_id]);
+
+    if (keyCheck.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'License key already exists for this product'
+      });
+    }
+
+    // Insert new stock
+    const [result] = await pool.execute(
+      'INSERT INTO product_stock (product_id, license_key, customer_id) VALUES (?, ?, ?)',
+      [product_id, license_key, req.customer_id]
+    );
+
+    // Update product stock count
+    await pool.execute(
+      'UPDATE products SET stock = stock + 1 WHERE id = ? AND customer_id = ?',
+      [product_id, req.customer_id]
+    );
+
+    // Get created stock with product details
+    const [newStock] = await pool.execute(`
+      SELECT 
+        ps.id, ps.product_id, ps.license_key, ps.sold, ps.created_at,
+        p.title as product_title, p.price, p.stock
+      FROM product_stock ps
+      LEFT JOIN products p ON ps.product_id = p.id
+      WHERE ps.id = ?
+    `, [result.insertId]);
+
+    res.status(201).json({
+      success: true,
+      message: 'License key added successfully',
+      stock: newStock[0]
+    });
+
+  } catch (error) {
+    console.error('Add stock error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Update license key
+app.put('/admin/stock/:stockId', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { stockId } = req.params;
+    const { license_key, sold } = req.body;
+
+    // Validate stock ID
+    if (!stockId || isNaN(stockId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid stock ID is required'
+      });
+    }
+
+    // Check if stock exists for this customer's products
+    const [stockCheck] = await pool.execute(`
+      SELECT ps.id, ps.product_id, ps.license_key, ps.sold, p.title as product_title
+      FROM product_stock ps
+      LEFT JOIN products p ON ps.product_id = p.id
+      WHERE ps.id = ? AND ps.customer_id = ?
+    `, [stockId, req.customer_id]);
+
+    if (stockCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Stock not found'
+      });
+    }
+
+    // Build update query dynamically
+    const updateFields = [];
+    const updateValues = [];
+
+    if (license_key !== undefined) {
+      // Check if new license key already exists for this product
+      const [keyCheck] = await pool.execute(`
+        SELECT id 
+        FROM product_stock 
+        WHERE license_key = ? AND id != ? AND customer_id = ?
+      `, [license_key, stockId, req.customer_id]);
+
+      if (keyCheck.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'License key already exists'
+        });
+      }
+
+      updateFields.push('license_key = ?');
+      updateValues.push(license_key);
+    }
+
+    if (sold !== undefined) {
+      updateFields.push('sold = ?');
+      updateValues.push(sold ? 1 : 0);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No fields to update'
+      });
+    }
+
+    updateValues.push(stockId);
+
+    // Update stock
+    await pool.execute(
+      `UPDATE product_stock SET ${updateFields.join(', ')} WHERE id = ?`,
+      updateValues
+    );
+
+    // Get updated stock
+    const [updatedStock] = await pool.execute(`
+      SELECT 
+        ps.id, ps.product_id, ps.license_key, ps.sold, ps.created_at,
+        p.title as product_title, p.price
+      FROM product_stock ps
+      LEFT JOIN products p ON ps.product_id = p.id
+      WHERE ps.id = ?
+    `, [stockId]);
+
+    res.json({
+      success: true,
+      message: 'Stock updated successfully',
+      stock: updatedStock[0]
+    });
+
+  } catch (error) {
+    console.error('Update stock error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Delete license key from stock
+app.delete('/admin/stock/:stockId', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { stockId } = req.params;
+
+    // Validate stock ID
+    if (!stockId || isNaN(stockId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid stock ID is required'
+      });
+    }
+
+    // Check if stock exists for this customer's products
+    const [stockCheck] = await pool.execute(`
+      SELECT ps.id, ps.product_id, ps.license_key, ps.sold, p.title as product_title
+      FROM product_stock ps
+      LEFT JOIN products p ON ps.product_id = p.id
+      WHERE ps.id = ? AND ps.customer_id = ?
+    `, [stockId, req.customer_id]);
+
+    if (stockCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Stock not found'
+      });
+    }
+
+    // Check if license key has been sold
+    if (stockCheck[0].sold === 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete sold license key'
+      });
+    }
+
+    // Delete stock
+    await pool.execute(
+      'DELETE FROM product_stock WHERE id = ?',
+      [stockId]
+    );
+
+    // Update product stock count (decrease by 1)
+    await pool.execute(
+      'UPDATE products SET stock = GREATEST(stock - 1, 0) WHERE id = ? AND customer_id = ?',
+      [stockCheck[0].product_id, req.customer_id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Stock deleted successfully',
+      stock: {
+        id: stockCheck[0].id,
+        license_key: stockCheck[0].license_key,
+        product_title: stockCheck[0].product_title
+      }
+    });
+
+  } catch (error) {
+    console.error('Delete stock error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Bulk add license keys
+app.post('/admin/stock/bulk', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { product_id, license_keys } = req.body;
+
+    // Validate required fields
+    if (!product_id || !license_keys || !Array.isArray(license_keys) || license_keys.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Product ID and array of license keys are required'
+      });
+    }
+
+    // Check if product exists for this customer
+    const [productCheck] = await pool.execute(
+      'SELECT id, title FROM products WHERE id = ? AND customer_id = ?',
+      [product_id, req.customer_id]
+    );
+
+    if (productCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+
+    // Filter out empty license keys and remove duplicates
+    const cleanKeys = [...new Set(license_keys.filter(key => key && key.trim()))];
+
+    if (cleanKeys.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid license keys provided'
+      });
+    }
+
+    // Check for existing license keys
+    const [existingKeys] = await pool.execute(`
+      SELECT license_key 
+      FROM product_stock 
+      WHERE license_key IN (${cleanKeys.map(() => '?').join(',')}) 
+      AND product_id = ? AND customer_id = ?
+    `, [...cleanKeys, product_id, req.customer_id]);
+
+    const existingKeysList = existingKeys.map(row => row.license_key);
+    const newKeys = cleanKeys.filter(key => !existingKeysList.includes(key));
+
+    if (newKeys.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'All license keys already exist for this product',
+        existing_keys: existingKeysList
+      });
+    }
+
+    // Bulk insert new license keys
+    const insertValues = newKeys.map(key => [product_id, key, req.customer_id]);
+    
+    await pool.execute(
+      `INSERT INTO product_stock (product_id, license_key, customer_id) VALUES ${insertValues.map(() => '(?, ?, ?)').join(', ')}`,
+      insertValues.flat()
+    );
+
+    // Update product stock count by the number of new keys added
+    await pool.execute(
+      'UPDATE products SET stock = stock + ? WHERE id = ? AND customer_id = ?',
+      [newKeys.length, product_id, req.customer_id]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: `Successfully added ${newKeys.length} license keys`,
+      added_count: newKeys.length,
+      skipped_count: existingKeysList.length,
+      added_keys: newKeys,
+      existing_keys: existingKeysList
+    });
+
+  } catch (error) {
+    console.error('Bulk add stock error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Sync product stock counts with actual license keys
+app.post('/admin/stock/sync', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { product_id = null } = req.body;
+
+    let whereClause = 'WHERE p.customer_id = ?';
+    let queryParams = [req.customer_id];
+
+    if (product_id) {
+      whereClause += ' AND p.id = ?';
+      queryParams.push(product_id);
+    }
+
+    // Calculate actual stock counts from product_stock table
+    const [stockCounts] = await pool.execute(`
+      SELECT 
+        p.id as product_id,
+        p.title as product_title,
+        p.stock as current_stock,
+        COALESCE(stock_count.actual_count, 0) as actual_stock,
+        COALESCE(stock_count.available_count, 0) as available_stock,
+        COALESCE(stock_count.sold_count, 0) as sold_stock
+      FROM products p
+      LEFT JOIN (
+        SELECT 
+          ps.product_id,
+          COUNT(*) as actual_count,
+          SUM(CASE WHEN ps.sold = 0 THEN 1 ELSE 0 END) as available_count,
+          SUM(CASE WHEN ps.sold = 1 THEN 1 ELSE 0 END) as sold_count
+        FROM product_stock ps
+        GROUP BY ps.product_id
+      ) stock_count ON p.id = stock_count.product_id
+      ${whereClause}
+    `, queryParams);
+
+    // Update products with correct stock counts
+    const updates = [];
+    for (const product of stockCounts) {
+      if (product.current_stock !== product.actual_stock) {
+        await pool.execute(
+          'UPDATE products SET stock = ? WHERE id = ? AND customer_id = ?',
+          [product.actual_stock, product.product_id, req.customer_id]
+        );
+        updates.push({
+          product_id: product.product_id,
+          product_title: product.product_title,
+          old_stock: product.current_stock,
+          new_stock: product.actual_stock,
+          available: product.available_stock,
+          sold: product.sold_stock
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Stock counts synchronized for ${updates.length} products`,
+      updates,
+      total_products_checked: stockCounts.length
+    });
+
+  } catch (error) {
+    console.error('Sync stock error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get stock analytics
+app.get('/admin/stock/analytics', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    // Get overall stock statistics
+    const [overallStats] = await pool.execute(`
+      SELECT 
+        COUNT(*) as total_stock,
+        SUM(CASE WHEN sold = 0 THEN 1 ELSE 0 END) as available_stock,
+        SUM(CASE WHEN sold = 1 THEN 1 ELSE 0 END) as sold_stock
+      FROM product_stock 
+      WHERE customer_id = ?
+    `, []);
+
+    // Get stock by product
+    const [productStats] = await pool.execute(`
+      SELECT 
+        p.id as product_id,
+        p.title as product_title,
+        COUNT(*) as total_stock,
+        SUM(CASE WHEN ps.sold = 0 THEN 1 ELSE 0 END) as available_stock,
+        SUM(CASE WHEN ps.sold = 1 THEN 1 ELSE 0 END) as sold_stock,
+        ROUND((SUM(CASE WHEN ps.sold = 1 THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2) as sold_percentage
+      FROM product_stock ps
+      LEFT JOIN products p ON ps.product_id = p.id
+      WHERE ps.customer_id = ?
+      GROUP BY p.id, p.title
+      ORDER BY total_stock DESC
+    `, []);
+
+    // Get recent stock activity (last 30 days)
+    const [recentActivity] = await pool.execute(`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as keys_added
+      FROM product_stock 
+      WHERE customer_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      GROUP BY DATE(created_at)
+      ORDER BY date DESC
+      LIMIT 30
+    `, []);
+
+    // Calculate overall statistics
+    const overall = overallStats[0];
+    const soldPercentage = overall.total_stock > 0 
+      ? Math.round((overall.sold_stock / overall.total_stock) * 100) 
+      : 0;
+
+    res.json({
+      success: true,
+      analytics: {
+        overall: {
+          ...overall,
+          sold_percentage: soldPercentage
+        },
+        by_product: productStats,
+        recent_activity: recentActivity
+      }
+    });
+
+  } catch (error) {
+    console.error('Stock analytics error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// ====================================
+// ADMIN USER MANAGEMENT APIs
+// ====================================
+
+// Get all users (Admin only)
+app.get('/admin/users', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
+  try {
+    const { page = 1, limit = 10, search = '', role = '' } = req.query;
+    
+    // Parse pagination parameters first
+    const parsedPage = parseInt(page, 10) || 1;
+    const parsedLimit = parseInt(limit, 10) || 10;
+    const parsedOffset = (parsedPage - 1) * parsedLimit;
+
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    // Build search conditions
+    let searchConditions = 'WHERE u.customer_id = ?';
+    let searchParams = [req.customer_id];
+
+    if (search) {
+      searchConditions += ' AND (u.fullname LIKE ? OR u.email LIKE ?)';
+      searchParams.push(`%${search}%`, `%${search}%`);
+    }
+
+    if (role) {
+      searchConditions += ' AND u.role = ?';
+      searchParams.push(role);
+    }
+
+    // Get total count
+    const [totalResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM users u ${searchConditions}`,
+      searchParams
+    );
+    const total = totalResult[0].total;
+    
+    // Get users with pagination
+    // Sanitize LIMIT and OFFSET values for direct SQL interpolation
+    const limitSafe = Math.min(Math.max(parseInt(parsedLimit, 10) || 10, 1), 100);
+    const offsetSafe = Math.max(parseInt(parsedOffset, 10) || 0, 0);
+    
+    console.log('Admin Users Query Debug:', {
+      searchConditions,
+      searchParams,
+      limitSafe,
+      offsetSafe,
+      paramCount: searchParams.length,
+      placeholderCount: (searchConditions + ' ORDER BY u.created_at DESC').match(/\?/g)?.length || 0
+    });
+    
+    const [users] = await pool.execute(
+      `SELECT 
+        u.id,
+        u.fullname,
+        u.email,
+        u.role,
+        u.money,
+        u.points,
+        u.discord_id,
+        u.created_at,
+        r.can_edit_categories,
+        r.can_edit_products,
+        r.can_edit_users,
+        r.can_edit_orders,
+        r.can_manage_keys,
+        r.can_view_reports,
+        r.can_manage_promotions,
+        r.can_manage_settings,
+        r.can_access_reseller_price
+      FROM users u
+      LEFT JOIN roles r ON u.role = r.rank_name
+      ${searchConditions}
+      ORDER BY u.created_at DESC
+      LIMIT ${limitSafe} OFFSET ${offsetSafe}`,
+      searchParams
+    );
+
+    res.json({
+      success: true,
+      message: 'Users retrieved successfully',
+      data: {
+        users: users.map(user => ({
+          id: user.id,
+          fullname: user.fullname,
+          email: user.email,
+          role: user.role,
+          money: user.money,
+          points: user.points,
+          discord_id: user.discord_id,
+          created_at: user.created_at,
+          permissions: {
+            can_edit_categories: Boolean(user.can_edit_categories),
+            can_edit_products: Boolean(user.can_edit_products),
+            can_edit_users: Boolean(user.can_edit_users),
+            can_edit_orders: Boolean(user.can_edit_orders),
+            can_manage_keys: Boolean(user.can_manage_keys),
+            can_view_reports: Boolean(user.can_view_reports),
+            can_manage_promotions: Boolean(user.can_manage_promotions),
+            can_manage_settings: Boolean(user.can_manage_settings),
+            can_access_reseller_price: Boolean(user.can_access_reseller_price)
+          }
+        })),
+        pagination: {
+          page: parsedPage,
+          limit: limitSafe,
+          total: total,
+          totalPages: Math.ceil(total / limitSafe)
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Create new user (Admin only)
+app.post('/admin/users', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
+  try {
+    const { fullname, email, password, role = 'member', money = 0, points = 0, discord_id } = req.body;
+
+    // Validate required fields
+    if (!fullname || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Fullname, email, and password are required'
+      });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid email format'
+      });
+    }
+
+    // Check if user already exists
+    const [existingUsers] = await pool.execute(
+      'SELECT id FROM users WHERE email = ? AND customer_id = ?',
+      [email, req.customer_id]
+    );
+
+    if (existingUsers.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'User with this email already exists'
+      });
+    }
+
+    // Validate role exists
+    const [roleCheck] = await pool.execute(
+      'SELECT id FROM roles WHERE rank_name = ?',
+      [role]
+    );
+
+    if (roleCheck.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid role. Available roles: member, moderator, admin, super_admin, reseller'
+      });
+    }
+
+    // Hash password
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    // Insert new user
+    const [result] = await pool.execute(
+      'INSERT INTO users (customer_id, fullname, email, password, role, money, points, discord_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [req.customer_id, fullname, email, hashedPassword, role, money, points, discord_id || null]
+    );
+
+    // Get the created user with role info
+    const [newUser] = await pool.execute(
+      `SELECT 
+        u.id,
+        u.fullname,
+        u.email,
+        u.role,
+        u.money,
+        u.points,
+        u.discord_id,
+        u.created_at,
+        r.can_edit_categories,
+        r.can_edit_products,
+        r.can_edit_users,
+        r.can_edit_orders,
+        r.can_manage_keys,
+        r.can_view_reports,
+        r.can_manage_promotions,
+        r.can_manage_settings,
+        r.can_access_reseller_price
+      FROM users u
+      LEFT JOIN roles r ON u.role = r.rank_name
+      WHERE u.id = ?`,
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'User created successfully',
+      data: {
+        user: {
+          id: newUser[0].id,
+          fullname: newUser[0].fullname,
+          email: newUser[0].email,
+          role: newUser[0].role,
+          money: newUser[0].money,
+          points: newUser[0].points,
+          discord_id: newUser[0].discord_id,
+          created_at: newUser[0].created_at,
+          permissions: {
+            can_edit_categories: Boolean(newUser[0].can_edit_categories),
+            can_edit_products: Boolean(newUser[0].can_edit_products),
+            can_edit_users: Boolean(newUser[0].can_edit_users),
+            can_edit_orders: Boolean(newUser[0].can_edit_orders),
+            can_manage_keys: Boolean(newUser[0].can_manage_keys),
+            can_view_reports: Boolean(newUser[0].can_view_reports),
+            can_manage_promotions: Boolean(newUser[0].can_manage_promotions),
+            can_manage_settings: Boolean(newUser[0].can_manage_settings),
+            can_access_reseller_price: Boolean(newUser[0].can_access_reseller_price)
+          }
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Create user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Update user (Admin only)
+app.put('/admin/users/:id', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { fullname, email, password, role, money, points, discord_id } = req.body;
+
+    // Check if user exists
+    const [existingUser] = await pool.execute(
+      'SELECT id, email FROM users WHERE id = ? AND customer_id = ?',
+      [id, req.customer_id]
+    );
+
+    if (existingUser.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Build update query dynamically
+    const updateFields = [];
+    const updateValues = [];
+
+    if (fullname !== undefined) {
+      updateFields.push('fullname = ?');
+      updateValues.push(fullname);
+    }
+
+    if (email !== undefined) {
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid email format'
+        });
+      }
+
+      // Check if email is already taken by another user
+      if (email !== existingUser[0].email) {
+        const [emailCheck] = await pool.execute(
+          'SELECT id FROM users WHERE email = ? AND customer_id = ? AND id != ?',
+          [email, req.customer_id, id]
+        );
+
+        if (emailCheck.length > 0) {
+          return res.status(409).json({
+            success: false,
+            message: 'Email is already taken by another user'
+          });
+        }
+      }
+
+      updateFields.push('email = ?');
+      updateValues.push(email);
+    }
+
+    if (password !== undefined) {
+      // Hash new password
+      const saltRounds = 10;
+      const hashedPassword = await bcrypt.hash(password, saltRounds);
+      updateFields.push('password = ?');
+      updateValues.push(hashedPassword);
+    }
+
+    if (role !== undefined) {
+      // Validate role exists
+      const [roleCheck] = await pool.execute(
+        'SELECT id FROM roles WHERE rank_name = ?',
+        [role]
+      );
+
+      if (roleCheck.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid role. Available roles: member, moderator, admin, super_admin, reseller'
+        });
+      }
+
+      updateFields.push('role = ?');
+      updateValues.push(role);
+    }
+
+    if (money !== undefined) {
+      updateFields.push('money = ?');
+      updateValues.push(money);
+    }
+
+    if (points !== undefined) {
+      updateFields.push('points = ?');
+      updateValues.push(points);
+    }
+
+    if (discord_id !== undefined) {
+      updateFields.push('discord_id = ?');
+      updateValues.push(discord_id || null);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No fields to update'
+      });
+    }
+
+    // Update user
+    updateValues.push(id, req.customer_id);
+    await pool.execute(
+      `UPDATE users SET ${updateFields.join(', ')} WHERE id = ? AND customer_id = ?`,
+      updateValues
+    );
+
+    // Get updated user
+    const [updatedUser] = await pool.execute(
+      `SELECT 
+        u.id,
+        u.fullname,
+        u.email,
+        u.role,
+        u.money,
+        u.points,
+        u.discord_id,
+        u.created_at,
+        r.can_edit_categories,
+        r.can_edit_products,
+        r.can_edit_users,
+        r.can_edit_orders,
+        r.can_manage_keys,
+        r.can_view_reports,
+        r.can_manage_promotions,
+        r.can_manage_settings,
+        r.can_access_reseller_price
+      FROM users u
+      LEFT JOIN roles r ON u.role = r.rank_name
+      WHERE u.id = ? AND u.customer_id = ?`,
+      [id, req.customer_id]
+    );
+
+    res.json({
+      success: true,
+      message: 'User updated successfully',
+      data: {
+        user: {
+          id: updatedUser[0].id,
+          fullname: updatedUser[0].fullname,
+          email: updatedUser[0].email,
+          role: updatedUser[0].role,
+          money: updatedUser[0].money,
+          points: updatedUser[0].points,
+          discord_id: updatedUser[0].discord_id,
+          created_at: updatedUser[0].created_at,
+          permissions: {
+            can_edit_categories: Boolean(updatedUser[0].can_edit_categories),
+            can_edit_products: Boolean(updatedUser[0].can_edit_products),
+            can_edit_users: Boolean(updatedUser[0].can_edit_users),
+            can_edit_orders: Boolean(updatedUser[0].can_edit_orders),
+            can_manage_keys: Boolean(updatedUser[0].can_manage_keys),
+            can_view_reports: Boolean(updatedUser[0].can_view_reports),
+            can_manage_promotions: Boolean(updatedUser[0].can_manage_promotions),
+            can_manage_settings: Boolean(updatedUser[0].can_manage_settings),
+            can_access_reseller_price: Boolean(updatedUser[0].can_access_reseller_price)
+          }
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Delete user (Admin only)
+app.delete('/admin/users/:id', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if user exists
+    const [existingUser] = await pool.execute(
+      'SELECT id, fullname, email FROM users WHERE id = ? AND customer_id = ?',
+      [id, req.customer_id]
+    );
+
+    if (existingUser.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Prevent self-deletion
+    if (parseInt(id) === req.user.id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete your own account'
+      });
+    }
+
+    // Delete user (CASCADE will handle related records)
+    await pool.execute(
+      'DELETE FROM users WHERE id = ? AND customer_id = ?',
+      [id, req.customer_id]
+    );
+
+    res.json({
+      success: true,
+      message: 'User deleted successfully',
+      deleted_user: {
+        id: existingUser[0].id,
+        fullname: existingUser[0].fullname,
+        email: existingUser[0].email
+      }
+    });
+
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// ====================================
+// ADMIN ROLES MANAGEMENT APIs
+// ====================================
+
+// Get all roles (Admin only)
+app.get('/admin/roles', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
+  try {
+    const [roles] = await pool.execute(
+      `SELECT 
+        id,
+        rank_name,
+        can_edit_categories,
+        can_edit_products,
+        can_edit_users,
+        can_edit_orders,
+        can_manage_keys,
+        can_view_reports,
+        can_manage_promotions,
+        can_manage_settings,
+        can_access_reseller_price,
+        created_at
+      FROM roles 
+      ORDER BY id ASC`
+    );
+
+    res.json({
+      success: true,
+      message: 'Roles retrieved successfully',
+      data: {
+        roles: roles.map(role => ({
+          ...role,
+          permissions: {
+            can_edit_categories: Boolean(role.can_edit_categories),
+            can_edit_products: Boolean(role.can_edit_products),
+            can_edit_users: Boolean(role.can_edit_users),
+            can_edit_orders: Boolean(role.can_edit_orders),
+            can_manage_keys: Boolean(role.can_manage_keys),
+            can_view_reports: Boolean(role.can_view_reports),
+            can_manage_promotions: Boolean(role.can_manage_promotions),
+            can_manage_settings: Boolean(role.can_manage_settings),
+            can_access_reseller_price: Boolean(role.can_access_reseller_price)
+          }
+        }))
+      }
+    });
+
+  } catch (error) {
+    console.error('Get roles error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Create new role (Admin only)
+app.post('/admin/roles', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
+  try {
+    const { 
+      rank_name, 
+      can_edit_categories = false,
+      can_edit_products = false,
+      can_edit_users = false,
+      can_edit_orders = false,
+      can_manage_keys = false,
+      can_view_reports = false,
+      can_manage_promotions = false,
+      can_manage_settings = false,
+      can_access_reseller_price = false
+    } = req.body;
+
+    // Validate required fields
+    if (!rank_name) {
+      return res.status(400).json({
+        success: false,
+        message: 'Role name is required'
+      });
+    }
+
+    // Validate role name format (alphanumeric and underscore only)
+    const roleNameRegex = /^[a-zA-Z0-9_]+$/;
+    if (!roleNameRegex.test(rank_name)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Role name can only contain letters, numbers, and underscores'
+      });
+    }
+
+    // Check if role already exists
+    const [existingRole] = await pool.execute(
+      'SELECT id FROM roles WHERE rank_name = ?',
+      [rank_name]
+    );
+
+    if (existingRole.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'Role with this name already exists'
+      });
+    }
+
+    // Insert new role
+    const [result] = await pool.execute(
+      `INSERT INTO roles (
+        rank_name, 
+        can_edit_categories, 
+        can_edit_products, 
+        can_edit_users, 
+        can_edit_orders, 
+        can_manage_keys, 
+        can_view_reports, 
+        can_manage_promotions, 
+        can_manage_settings, 
+        can_access_reseller_price
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        rank_name,
+        can_edit_categories ? 1 : 0,
+        can_edit_products ? 1 : 0,
+        can_edit_users ? 1 : 0,
+        can_edit_orders ? 1 : 0,
+        can_manage_keys ? 1 : 0,
+        can_view_reports ? 1 : 0,
+        can_manage_promotions ? 1 : 0,
+        can_manage_settings ? 1 : 0,
+        can_access_reseller_price ? 1 : 0
+      ]
+    );
+
+    // Get the created role
+    const [newRole] = await pool.execute(
+      `SELECT 
+        id,
+        rank_name,
+        can_edit_categories,
+        can_edit_products,
+        can_edit_users,
+        can_edit_orders,
+        can_manage_keys,
+        can_view_reports,
+        can_manage_promotions,
+        can_manage_settings,
+        can_access_reseller_price,
+        created_at
+      FROM roles 
+      WHERE id = ?`,
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Role created successfully',
+      data: {
+        role: {
+          ...newRole[0],
+          permissions: {
+            can_edit_categories: Boolean(newRole[0].can_edit_categories),
+            can_edit_products: Boolean(newRole[0].can_edit_products),
+            can_edit_users: Boolean(newRole[0].can_edit_users),
+            can_edit_orders: Boolean(newRole[0].can_edit_orders),
+            can_manage_keys: Boolean(newRole[0].can_manage_keys),
+            can_view_reports: Boolean(newRole[0].can_view_reports),
+            can_manage_promotions: Boolean(newRole[0].can_manage_promotions),
+            can_manage_settings: Boolean(newRole[0].can_manage_settings),
+            can_access_reseller_price: Boolean(newRole[0].can_access_reseller_price)
+          }
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Create role error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Update role (Admin only)
+app.put('/admin/roles/:id', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { 
+      rank_name,
+      can_edit_categories,
+      can_edit_products,
+      can_edit_users,
+      can_edit_orders,
+      can_manage_keys,
+      can_view_reports,
+      can_manage_promotions,
+      can_manage_settings,
+      can_access_reseller_price
+    } = req.body;
+
+    // Check if role exists
+    const [existingRole] = await pool.execute(
+      'SELECT id, rank_name FROM roles WHERE id = ?',
+      [id]
+    );
+
+    if (existingRole.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Role not found'
+      });
+    }
+
+    // Build update query dynamically
+    const updateFields = [];
+    const updateValues = [];
+
+    if (rank_name !== undefined) {
+      // Validate role name format
+      const roleNameRegex = /^[a-zA-Z0-9_]+$/;
+      if (!roleNameRegex.test(rank_name)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Role name can only contain letters, numbers, and underscores'
+        });
+      }
+
+      // Check if role name is already taken by another role
+      if (rank_name !== existingRole[0].rank_name) {
+        const [nameCheck] = await pool.execute(
+          'SELECT id FROM roles WHERE rank_name = ? AND id != ?',
+          [rank_name, id]
+        );
+
+        if (nameCheck.length > 0) {
+          return res.status(409).json({
+            success: false,
+            message: 'Role name is already taken by another role'
+          });
+        }
+      }
+
+      updateFields.push('rank_name = ?');
+      updateValues.push(rank_name);
+    }
+
+    // Add permission fields
+    if (can_edit_categories !== undefined) {
+      updateFields.push('can_edit_categories = ?');
+      updateValues.push(can_edit_categories ? 1 : 0);
+    }
+
+    if (can_edit_products !== undefined) {
+      updateFields.push('can_edit_products = ?');
+      updateValues.push(can_edit_products ? 1 : 0);
+    }
+
+    if (can_edit_users !== undefined) {
+      updateFields.push('can_edit_users = ?');
+      updateValues.push(can_edit_users ? 1 : 0);
+    }
+
+    if (can_edit_orders !== undefined) {
+      updateFields.push('can_edit_orders = ?');
+      updateValues.push(can_edit_orders ? 1 : 0);
+    }
+
+    if (can_manage_keys !== undefined) {
+      updateFields.push('can_manage_keys = ?');
+      updateValues.push(can_manage_keys ? 1 : 0);
+    }
+
+    if (can_view_reports !== undefined) {
+      updateFields.push('can_view_reports = ?');
+      updateValues.push(can_view_reports ? 1 : 0);
+    }
+
+    if (can_manage_promotions !== undefined) {
+      updateFields.push('can_manage_promotions = ?');
+      updateValues.push(can_manage_promotions ? 1 : 0);
+    }
+
+    if (can_manage_settings !== undefined) {
+      updateFields.push('can_manage_settings = ?');
+      updateValues.push(can_manage_settings ? 1 : 0);
+    }
+
+    if (can_access_reseller_price !== undefined) {
+      updateFields.push('can_access_reseller_price = ?');
+      updateValues.push(can_access_reseller_price ? 1 : 0);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No fields to update'
+      });
+    }
+
+    // Update role
+    updateValues.push(id);
+    await pool.execute(
+      `UPDATE roles SET ${updateFields.join(', ')} WHERE id = ?`,
+      updateValues
+    );
+
+    // Get updated role
+    const [updatedRole] = await pool.execute(
+      `SELECT 
+        id,
+        rank_name,
+        can_edit_categories,
+        can_edit_products,
+        can_edit_users,
+        can_edit_orders,
+        can_manage_keys,
+        can_view_reports,
+        can_manage_promotions,
+        can_manage_settings,
+        can_access_reseller_price,
+        created_at
+      FROM roles 
+      WHERE id = ?`,
+      [id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Role updated successfully',
+      data: {
+        role: {
+          ...updatedRole[0],
+          permissions: {
+            can_edit_categories: Boolean(updatedRole[0].can_edit_categories),
+            can_edit_products: Boolean(updatedRole[0].can_edit_products),
+            can_edit_users: Boolean(updatedRole[0].can_edit_users),
+            can_edit_orders: Boolean(updatedRole[0].can_edit_orders),
+            can_manage_keys: Boolean(updatedRole[0].can_manage_keys),
+            can_view_reports: Boolean(updatedRole[0].can_view_reports),
+            can_manage_promotions: Boolean(updatedRole[0].can_manage_promotions),
+            can_manage_settings: Boolean(updatedRole[0].can_manage_settings),
+            can_access_reseller_price: Boolean(updatedRole[0].can_access_reseller_price)
+          }
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Update role error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Delete role (Admin only)
+app.delete('/admin/roles/:id', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if role exists
+    const [existingRole] = await pool.execute(
+      'SELECT id, rank_name FROM roles WHERE id = ?',
+      [id]
+    );
+
+    if (existingRole.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Role not found'
+      });
+    }
+
+    // Check if any users are using this role
+    const [usersWithRole] = await pool.execute(
+      'SELECT COUNT(*) as count FROM users WHERE role = ?',
+      [existingRole[0].rank_name]
+    );
+
+    if (usersWithRole[0].count > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete role "${existingRole[0].rank_name}" because ${usersWithRole[0].count} user(s) are currently using this role`
+      });
+    }
+
+    // Delete role
+    await pool.execute(
+      'DELETE FROM roles WHERE id = ?',
+      [id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Role deleted successfully',
+      data: {
+        deleted_role: {
+          id: existingRole[0].id,
+          rank_name: existingRole[0].rank_name
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Delete role error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
 
 // Start server
 app.listen(PORT, () => {
