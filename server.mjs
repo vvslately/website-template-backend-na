@@ -40,7 +40,9 @@ const multiTenantMiddleware = async (req, res, next) => {
     const host = req.get('host') || req.get('x-forwarded-host') || '';
     
     // Check if it's localhost first - auto use 'death'
-    if (host.includes('localhost')) {
+    // This includes requests FROM localhost frontend TO external API
+    const origin = req.get('origin') || '';
+    if (host.includes('localhost') || origin.includes('localhost')) {
       const [sites] = await pool.execute(
         'SELECT customer_id, website_name FROM auth_sites WHERE website_name = ?',
         ['death']
@@ -90,7 +92,9 @@ const multiTenantMiddleware = async (req, res, next) => {
       xSubdomain: req.get('x-subdomain'),
       xWebsiteName: req.get('x-website-name'),
       extractedSubdomain: subdomain,
-      userAgent: req.get('user-agent')
+      userAgent: req.get('user-agent'),
+      isLocalhostHost: host.includes('localhost'),
+      isLocalhostOrigin: origin.includes('localhost')
     });
     
     // Find customer_id from auth_sites table using website_name
