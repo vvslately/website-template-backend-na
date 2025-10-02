@@ -148,6 +148,8 @@ const multiTenantMiddleware = async (req, res, next) => {
   }
 };
 
+
+
 // Apply multi-tenant middleware to all routes
 app.use(multiTenantMiddleware);
 
@@ -1850,6 +1852,76 @@ app.get('/getexpiredday', async (req, res) => {
 
   } catch (error) {
     console.error('Get expired day error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Check customer status and expiry endpoint
+app.get('/check-customer-status', async (req, res) => {
+  try {
+    // Check if customer_id is available from multitenant middleware
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่มีข้อมูล customer_id',
+        status: 'no_customer_id'
+      });
+    }
+
+    // Get customer info and expired day from auth_sites table
+    const [sites] = await pool.execute(
+      'SELECT customer_id, website_name, expiredDay FROM auth_sites WHERE customer_id = ? ORDER BY id ASC LIMIT 1',
+      [req.customer_id]
+    );
+
+    if (sites.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบข้อมูล customer_id',
+        status: 'customer_not_found'
+      });
+    }
+
+    const site = sites[0];
+    const expiredDay = new Date(site.expiredDay);
+    const currentDate = new Date();
+    
+    // Reset time to compare only dates
+    currentDate.setHours(0, 0, 0, 0);
+    expiredDay.setHours(0, 0, 0, 0);
+
+    // Check if expired
+    if (currentDate > expiredDay) {
+      return res.json({
+        success: true,
+        message: 'หมดอายุ',
+        status: 'expired',
+        customer_id: req.customer_id,
+        website_name: site.website_name,
+        expiredDay: site.expiredDay,
+        currentDate: currentDate.toISOString().split('T')[0],
+        expiredDate: expiredDay.toISOString().split('T')[0]
+      });
+    }
+
+    // Still valid
+    return res.json({
+      success: true,
+      message: 'ยังไม่หมดอายุ',
+      status: 'active',
+      customer_id: req.customer_id,
+      website_name: site.website_name,
+      expiredDay: site.expiredDay,
+      currentDate: currentDate.toISOString().split('T')[0],
+      expiredDate: expiredDay.toISOString().split('T')[0]
+    });
+
+  } catch (error) {
+    console.error('Check customer status error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error',
