@@ -1651,7 +1651,8 @@ app.get('/myrole', authenticateToken, async (req, res) => {
 app.get('/roles', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
   try {
     const [roles] = await pool.execute(
-      'SELECT * FROM roles ORDER BY id ASC'
+      'SELECT * FROM roles WHERE customer_id = ? ORDER BY id ASC',
+      [req.customer_id]
     );
 
     res.json({
@@ -5306,8 +5307,8 @@ app.post('/admin/roles', authenticateToken, requirePermission('can_edit_users'),
 
     // Check if role already exists
     const [existingRole] = await pool.execute(
-      'SELECT id FROM roles WHERE rank_name = ?',
-      [rank_name]
+      'SELECT id FROM roles WHERE rank_name = ? AND customer_id = ?',
+      [rank_name, req.customer_id]
     );
 
     if (existingRole.length > 0) {
@@ -5320,6 +5321,7 @@ app.post('/admin/roles', authenticateToken, requirePermission('can_edit_users'),
     // Insert new role
     const [result] = await pool.execute(
       `INSERT INTO roles (
+        customer_id,
         rank_name, 
         can_edit_categories, 
         can_edit_products, 
@@ -5330,8 +5332,9 @@ app.post('/admin/roles', authenticateToken, requirePermission('can_edit_users'),
         can_manage_promotions, 
         can_manage_settings, 
         can_access_reseller_price
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        req.customer_id,
         rank_name,
         can_edit_categories ? 1 : 0,
         can_edit_products ? 1 : 0,
@@ -5361,8 +5364,8 @@ app.post('/admin/roles', authenticateToken, requirePermission('can_edit_users'),
         can_access_reseller_price,
         created_at
       FROM roles 
-      WHERE id = ?`,
-      [result.insertId]
+      WHERE id = ? AND customer_id = ?`,
+      [result.insertId, req.customer_id]
     );
 
     res.status(201).json({
@@ -5415,8 +5418,8 @@ app.put('/admin/roles/:id', authenticateToken, requirePermission('can_edit_users
 
     // Check if role exists
     const [existingRole] = await pool.execute(
-      'SELECT id, rank_name FROM roles WHERE id = ?',
-      [id]
+      'SELECT id, rank_name FROM roles WHERE id = ? AND customer_id = ?',
+      [id, req.customer_id]
     );
 
     if (existingRole.length === 0) {
@@ -5443,8 +5446,8 @@ app.put('/admin/roles/:id', authenticateToken, requirePermission('can_edit_users
       // Check if role name is already taken by another role
       if (rank_name !== existingRole[0].rank_name) {
         const [nameCheck] = await pool.execute(
-          'SELECT id FROM roles WHERE rank_name = ? AND id != ?',
-          [rank_name, id]
+          'SELECT id FROM roles WHERE rank_name = ? AND id != ? AND customer_id = ?',
+          [rank_name, id, req.customer_id]
         );
 
         if (nameCheck.length > 0) {
@@ -5513,9 +5516,9 @@ app.put('/admin/roles/:id', authenticateToken, requirePermission('can_edit_users
     }
 
     // Update role
-    updateValues.push(id);
+    updateValues.push(id, req.customer_id);
     await pool.execute(
-      `UPDATE roles SET ${updateFields.join(', ')} WHERE id = ?`,
+      `UPDATE roles SET ${updateFields.join(', ')} WHERE id = ? AND customer_id = ?`,
       updateValues
     );
 
@@ -5535,8 +5538,8 @@ app.put('/admin/roles/:id', authenticateToken, requirePermission('can_edit_users
         can_access_reseller_price,
         created_at
       FROM roles 
-      WHERE id = ?`,
-      [id]
+      WHERE id = ? AND customer_id = ?`,
+      [id, req.customer_id]
     );
 
     res.json({
@@ -5577,8 +5580,8 @@ app.delete('/admin/roles/:id', authenticateToken, requirePermission('can_edit_us
 
     // Check if role exists
     const [existingRole] = await pool.execute(
-      'SELECT id, rank_name FROM roles WHERE id = ?',
-      [id]
+      'SELECT id, rank_name FROM roles WHERE id = ? AND customer_id = ?',
+      [id, req.customer_id]
     );
 
     if (existingRole.length === 0) {
@@ -5590,8 +5593,8 @@ app.delete('/admin/roles/:id', authenticateToken, requirePermission('can_edit_us
 
     // Check if any users are using this role
     const [usersWithRole] = await pool.execute(
-      'SELECT COUNT(*) as count FROM users WHERE role = ?',
-      [existingRole[0].rank_name]
+      'SELECT COUNT(*) as count FROM users WHERE role = ? AND customer_id = ?',
+      [existingRole[0].rank_name, req.customer_id]
     );
 
     if (usersWithRole[0].count > 0) {
@@ -5603,8 +5606,8 @@ app.delete('/admin/roles/:id', authenticateToken, requirePermission('can_edit_us
 
     // Delete role
     await pool.execute(
-      'DELETE FROM roles WHERE id = ?',
-      [id]
+      'DELETE FROM roles WHERE id = ? AND customer_id = ?',
+      [id, req.customer_id]
     );
 
     res.json({
