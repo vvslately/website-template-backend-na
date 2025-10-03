@@ -3799,11 +3799,11 @@ app.get('/admin/reports/products', authenticateToken, requirePermission('can_edi
         WHERE customer_id = ?
         GROUP BY product_id
       ) stock_info ON p.id = stock_info.product_id
-      WHERE 1=1 ${categoryFilter}
+      WHERE p.customer_id = ? ${categoryFilter}
       ORDER BY ${sort_by === 'revenue' ? 'total_revenue' : 
                  sort_by === 'stock' ? 'available_license_keys' : 
                  'total_sales'} DESC
-    `, [req.customer_id, req.customer_id, startDate, req.customer_id]);
+    `, [req.customer_id, req.customer_id, startDate, req.customer_id, req.customer_id]);
 
     // Get categories summary
     const [categoriesData] = await pool.execute(`
@@ -3814,7 +3814,7 @@ app.get('/admin/reports/products', authenticateToken, requirePermission('can_edi
         COALESCE(SUM(sales.total_sales), 0) as total_sales,
         COALESCE(SUM(sales.total_revenue), 0) as total_revenue
       FROM categories c
-      LEFT JOIN products p ON c.id = p.category_id
+      LEFT JOIN products p ON c.id = p.category_id AND p.customer_id = ?
       LEFT JOIN (
         SELECT 
           ti.product_id,
@@ -3825,10 +3825,10 @@ app.get('/admin/reports/products', authenticateToken, requirePermission('can_edi
         WHERE t.customer_id = ?
         GROUP BY ti.product_id
       ) sales ON p.id = sales.product_id
-      WHERE 1=1
+      WHERE c.customer_id = ?
       GROUP BY c.id, c.title
       ORDER BY total_revenue DESC
-    `, [req.customer_id, req.customer_id]);
+    `, [req.customer_id, req.customer_id, req.customer_id]);
 
     res.json({
       success: true,
@@ -3865,7 +3865,7 @@ app.get('/admin/reports/users', authenticateToken, requirePermission('can_edit_p
     startDate.setDate(startDate.getDate() - periodDays);
 
     // Get users with activity data
-    const usersQueryParams = [startDate, startDate, req.customer_id, req.customer_id];
+    const usersQueryParams = [startDate, startDate, req.customer_id, req.customer_id, req.customer_id];
     const [usersData] = await pool.execute(`
       SELECT 
         u.id,
@@ -3903,7 +3903,7 @@ app.get('/admin/reports/users', authenticateToken, requirePermission('can_edit_p
         WHERE customer_id = ?
         GROUP BY user_id
       ) topup_stats ON u.id = topup_stats.user_id
-      WHERE 1=1
+      WHERE u.customer_id = ?
       ORDER BY total_spent DESC
       LIMIT ${parsedLimit} OFFSET ${offset}
     `, usersQueryParams);
@@ -3971,7 +3971,7 @@ app.get('/admin/reports/topups', authenticateToken, requirePermission('can_edit_
 
     // Build filters
     let filters = '';
-    const queryParams = [req.customer_id];
+    const queryParams = [req.customer_id, req.customer_id];
     
     if (start_date) {
       filters += ' AND t.created_at >= ?';
@@ -4005,7 +4005,7 @@ app.get('/admin/reports/topups', authenticateToken, requirePermission('can_edit_
         t.created_at,
         t.updated_at
       FROM topups t
-      LEFT JOIN users u ON t.user_id = u.id
+      LEFT JOIN users u ON t.user_id = u.id AND u.customer_id = ?
       WHERE t.customer_id = ? ${filters}
       ORDER BY t.created_at DESC
       LIMIT ${parsedLimit} OFFSET ${offset}
@@ -4023,7 +4023,7 @@ app.get('/admin/reports/topups', authenticateToken, requirePermission('can_edit_
         COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_count
       FROM topups t
       WHERE t.customer_id = ? ${filters}
-    `, queryParams); // Use same queryParams without limit/offset
+    `, [req.customer_id, ...queryParams.slice(2)]); // Use customer_id + the filter params
 
     // Get payment methods summary
     const [methodsSummary] = await pool.execute(`
@@ -4035,7 +4035,7 @@ app.get('/admin/reports/topups', authenticateToken, requirePermission('can_edit_
       WHERE t.customer_id = ? ${filters}
       GROUP BY method
       ORDER BY success_amount DESC
-    `, queryParams); // Use same queryParams without limit/offset
+    `, [req.customer_id, ...queryParams.slice(2)]); // Use customer_id + the filter params
 
     const totalItems = summary[0].total_topups;
     const totalPages = Math.ceil(totalItems / parsedLimit);
