@@ -1419,7 +1419,39 @@ app.get('/products', async (req, res) => {
       });
     }
 
-    // Get all products with category information for specific customer
+    const categoryId = req.query.category_id;
+    let whereClause = 'p.customer_id = ? AND p.isActive = 1';
+    let queryParams = [req.customer_id];
+
+    // If category_id is provided, validate it and add to filter
+    if (categoryId) {
+      // Validate category ID
+      if (isNaN(categoryId)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid category ID format'
+        });
+      }
+
+      // Check if category exists for this customer
+      const [categoryCheck] = await pool.execute(
+        'SELECT id, title FROM categories WHERE id = ? AND customer_id = ? AND isActive = 1',
+        [categoryId, req.customer_id]
+      );
+
+      if (categoryCheck.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Category not found or inactive'
+        });
+      }
+
+      // Add category filter to query
+      whereClause += ' AND p.category_id = ?';
+      queryParams.push(categoryId);
+    }
+
+    // Get products with category information for specific customer
     const [products] = await pool.execute(
       `SELECT 
         p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, p.stock, 
@@ -1429,16 +1461,17 @@ app.get('/products', async (req, res) => {
         c.title as category_title, c.category as category_slug
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
-      WHERE 1=1 AND p.isActive = 1
+      WHERE ${whereClause}
       ORDER BY p.priority DESC, p.title ASC`,
-      [req.customer_id]
+      queryParams
     );
 
     res.json({
       success: true,
       message: 'Products retrieved successfully',
       products: products,
-      total: products.length
+      total: products.length,
+      category_id: categoryId || null
     });
 
   } catch (error) {
@@ -2239,7 +2272,7 @@ app.get('/admin/products', authenticateToken, requirePermission('can_edit_produc
         c.title as category_title, c.category as category_slug
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
-      WHERE 1=1
+      WHERE p.customer_id = ?
     `;
 
     const queryParams = [req.customer_id];
@@ -2250,6 +2283,19 @@ app.get('/admin/products', authenticateToken, requirePermission('can_edit_produc
     }
 
     if (categoryId && !isNaN(categoryId)) {
+      // Validate that category exists for this customer
+      const [categoryCheck] = await pool.execute(
+        'SELECT id, title FROM categories WHERE id = ? AND customer_id = ? AND isActive = 1',
+        [parseInt(categoryId), req.customer_id]
+      );
+
+      if (categoryCheck.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Category not found or inactive'
+        });
+      }
+
       query += ' AND p.category_id = ?';
       queryParams.push(parseInt(categoryId));
     }
@@ -2278,7 +2324,7 @@ app.get('/admin/products', authenticateToken, requirePermission('can_edit_produc
       SELECT COUNT(*) as total
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
-      WHERE 1=1
+      WHERE p.customer_id = ?
     `;
     const countParams = [req.customer_id];
 
