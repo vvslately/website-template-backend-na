@@ -5212,6 +5212,14 @@ app.delete('/admin/users/:id', authenticateToken, requirePermission('can_edit_us
 // Get all roles (Admin only)
 app.get('/admin/roles', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
   try {
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
     const [roles] = await pool.execute(
       `SELECT 
         id,
@@ -5227,7 +5235,9 @@ app.get('/admin/roles', authenticateToken, requirePermission('can_edit_users'), 
         can_access_reseller_price,
         created_at
       FROM roles 
-      ORDER BY id ASC`
+      WHERE customer_id = ?
+      ORDER BY id ASC`,
+      [req.customer_id]
     );
 
     res.json({
