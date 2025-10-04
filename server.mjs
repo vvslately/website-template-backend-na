@@ -5631,6 +5631,179 @@ app.delete('/admin/roles/:id', authenticateToken, requirePermission('can_edit_us
   }
 });
 
+
+
+
+
+
+// ==================== SALES STATISTICS API ====================
+
+// Get sales statistics (daily, weekly, monthly)
+app.get('/stats', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { 
+      period = 'daily', // 'daily', 'weekly', 'monthly'
+      start_date = null,
+      end_date = null,
+      limit = 30 // จำนวนช่วงเวลาที่ต้องการดึง
+    } = req.query;
+
+    const customer_id = req.customer_id;
+    
+    // Ensure parsedLimit is a valid integer
+    let parsedLimit = parseInt(limit, 10);
+    if (isNaN(parsedLimit) || parsedLimit <= 0) {
+      parsedLimit = 30;
+    }
+    parsedLimit = Math.min(parsedLimit, 365);
+
+    // Build date filters
+    let dateFilter = '';
+    const dateParams = [];
+    
+    if (start_date) {
+      dateFilter += ' AND t.created_at >= ?';
+      dateParams.push(new Date(start_date));
+    }
+    
+    if (end_date) {
+      dateFilter += ' AND t.created_at <= ?';
+      dateParams.push(new Date(end_date));
+    }
+
+    // สร้าง query ตาม period ที่เลือก
+    let groupByClause = '';
+    let selectDateFormat = '';
+    
+    if (period === 'daily') {
+      selectDateFormat = 'DATE(t.created_at) as period_date';
+      groupByClause = 'DATE(t.created_at)';
+    } else if (period === 'weekly') {
+      selectDateFormat = 'YEARWEEK(t.created_at, 1) as period_date';
+      groupByClause = 'YEARWEEK(t.created_at, 1)';
+    } else if (period === 'monthly') {
+      selectDateFormat = 'DATE_FORMAT(t.created_at, "%Y-%m") as period_date';
+      groupByClause = 'DATE_FORMAT(t.created_at, "%Y-%m")';
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid period. Must be "daily", "weekly", or "monthly"'
+      });
+    }
+
+    // Query สำหรับสถิติการขาย
+    const statsQuery = `
+      SELECT 
+        ${selectDateFormat},
+        COUNT(DISTINCT t.id) as total_transactions,
+        COUNT(DISTINCT t.user_id) as unique_customers,
+        COALESCE(SUM(t.total_price), 0) as total_revenue,
+        COALESCE(AVG(t.total_price), 0) as average_order_value,
+        COUNT(ti.id) as total_items_sold,
+        COALESCE(SUM(ti.quantity), 0) as total_quantity_sold,
+        MIN(t.created_at) as period_start,
+        MAX(t.created_at) as period_end
+      FROM transactions t
+      LEFT JOIN transaction_items ti ON t.id = ti.transaction_id AND ti.customer_id = ?
+      WHERE t.customer_id = ? ${dateFilter}
+      GROUP BY ${groupByClause}
+      ORDER BY period_date DESC
+      LIMIT ?
+    `;
+
+    // Build parameters in correct order
+    const statsParams = [customer_id, customer_id, ...dateParams, parsedLimit];
+
+    // ใช้ .query() แทน .execute() เพราะ LIMIT ? ไม่รองรับใน prepared statements ของ MySQL2
+    const [stats] = await pool.query(statsQuery, statsParams);
+
+    // Query สำหรับ top selling products ในช่วงเวลาที่เลือก
+    const topProductsQuery = `
+      SELECT 
+        p.id,
+        p.title,
+        p.image,
+        p.price,
+        COUNT(DISTINCT ti.transaction_id) as times_sold,
+        COALESCE(SUM(ti.quantity), 0) as total_quantity_sold,
+        COALESCE(SUM(ti.price * ti.quantity), 0) as total_revenue
+      FROM transaction_items ti
+      LEFT JOIN products p ON ti.product_id = p.id
+      LEFT JOIN transactions t ON ti.transaction_id = t.id
+      WHERE ti.customer_id = ? AND t.customer_id = ? ${dateFilter}
+      GROUP BY p.id, p.title, p.image, p.price
+      ORDER BY total_revenue DESC
+      LIMIT 10
+    `;
+
+    const topProductsParams = [customer_id, customer_id, ...dateParams];
+
+    const [topProducts] = await pool.query(topProductsQuery, topProductsParams);
+
+    // Query สำหรับ overall summary
+    const summaryQuery = `
+      SELECT 
+        COUNT(DISTINCT t.id) as total_transactions,
+        COUNT(DISTINCT t.user_id) as total_customers,
+        COALESCE(SUM(t.total_price), 0) as total_revenue,
+        COALESCE(AVG(t.total_price), 0) as average_order_value,
+        COUNT(ti.id) as total_items_sold,
+        COALESCE(SUM(ti.quantity), 0) as total_quantity_sold
+      FROM transactions t
+      LEFT JOIN transaction_items ti ON t.id = ti.transaction_id AND ti.customer_id = ?
+      WHERE t.customer_id = ? ${dateFilter}
+    `;
+
+    const summaryParams = [customer_id, customer_id, ...dateParams];
+
+    const [summary] = await pool.query(summaryQuery, summaryParams);
+
+    // Format response
+    res.json({
+      success: true,
+      message: 'Statistics retrieved successfully',
+      data: {
+        period: period,
+        customer_id: customer_id,
+        summary: summary[0],
+        statistics: stats.map(stat => ({
+          period_date: stat.period_date,
+          period_start: stat.period_start,
+          period_end: stat.period_end,
+          total_transactions: parseInt(stat.total_transactions),
+          unique_customers: parseInt(stat.unique_customers),
+          total_revenue: parseFloat(stat.total_revenue),
+          average_order_value: parseFloat(stat.average_order_value),
+          total_items_sold: parseInt(stat.total_items_sold),
+          total_quantity_sold: parseInt(stat.total_quantity_sold)
+        })),
+        top_products: topProducts.map(product => ({
+          id: product.id,
+          title: product.title,
+          image: product.image,
+          price: parseFloat(product.price),
+          times_sold: parseInt(product.times_sold),
+          total_quantity_sold: parseInt(product.total_quantity_sold),
+          total_revenue: parseFloat(product.total_revenue)
+        }))
+      },
+      filters: {
+        start_date: start_date,
+        end_date: end_date,
+        limit: parsedLimit
+      }
+    });
+
+  } catch (error) {
+    console.error('Get stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
