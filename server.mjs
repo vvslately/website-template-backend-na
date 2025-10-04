@@ -1475,6 +1475,98 @@ app.post('/purchase', authenticateToken, async (req, res) => {
 
     await connection.commit();
 
+    // Get Discord webhook URL, site name, and site logo from config
+    const [configRows] = await connection.execute(
+      'SELECT discord_webhook, site_name, site_logo FROM config WHERE customer_id = ? ORDER BY id ASC LIMIT 1',
+      [req.customer_id]
+    );
+    const discordWebhookUrl = configRows.length > 0 ? configRows[0].discord_webhook : null;
+    const siteName = configRows.length > 0 ? configRows[0].site_name : 'Backend System';
+    const siteLogo = configRows.length > 0 ? configRows[0].site_logo : 'https://img2.pic.in.th/pic/logodiscordf124e71a99293428.png';
+
+    console.log("Discord webhook debug:", {
+      hasConfig: configRows.length > 0,
+      webhookUrl: discordWebhookUrl ? "SET" : "NOT_SET",
+      webhookUrlLength: discordWebhookUrl ? discordWebhookUrl.length : 0
+    });
+
+    // Send Discord webhook if configured
+    if (discordWebhookUrl) {
+      try {
+        const [userInfo] = await connection.execute(
+          'SELECT fullname, email FROM users WHERE id = ?',
+          [userId]
+        );
+        const user = userInfo[0];
+
+        // Get user's remaining money after purchase
+        const [remainingMoney] = await connection.execute(
+          'SELECT money FROM users WHERE id = ?',
+          [userId]
+        );
+        const newMoney = parseFloat(remainingMoney[0].money) || 0;
+
+        const embed = {
+          title: "🛒 การซื้อสินค้าใหม่",
+          color: 0x00ff00,
+          fields: [
+            {
+              name: "📋 หมายเลขบิล",
+              value: billNumber,
+              inline: true
+            },
+            {
+              name: "👤 ผู้ซื้อ",
+              value: user.fullname || user.email || "ไม่ระบุ",
+              inline: true
+            },
+            {
+              name: "💰 ราคารวม",
+              value: `${totalPrice.toFixed(2)} บาท`,
+              inline: true
+            },
+            {
+              name: "📦 จำนวนสินค้า",
+              value: `${transactionItems.length} รายการ`,
+              inline: true
+            },
+            {
+              name: "💳 เงินคงเหลือ",
+              value: `${newMoney.toFixed(2)} บาท`,
+              inline: true
+            },
+            {
+              name: "🏷️ สินค้า",
+              value: product.title,
+              inline: false
+            }
+          ],
+          timestamp: new Date().toISOString(),
+          footer: {
+            text: siteName
+          },
+          thumbnail: {
+            url: siteLogo
+          }
+        };
+
+        const webhookPayload = {
+          embeds: [embed]
+        };
+
+        const webhookResponse = await axios.post(discordWebhookUrl, webhookPayload, {
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        });
+
+        console.log('Discord webhook sent successfully');
+      } catch (webhookError) {
+        console.error('Discord webhook error:', webhookError);
+        // Don't fail the purchase if webhook fails
+      }
+    }
+
     res.json({
       success: true,
       message: 'Purchase completed successfully',
@@ -4402,19 +4494,7 @@ app.post('/admin/stock', authenticateToken, requirePermission('can_edit_products
       });
     }
 
-    // Check if license key already exists for this product
-    const [keyCheck] = await pool.execute(`
-      SELECT id 
-      FROM product_stock 
-      WHERE license_key = ? AND product_id = ? AND customer_id = ?
-    `, [license_key, product_id, req.customer_id]);
-
-    if (keyCheck.length > 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'License key already exists for this product'
-      });
-    }
+    // License key validation removed - allowing duplicates
 
     // Insert new stock
     const [result] = await pool.execute(
@@ -4488,20 +4568,7 @@ app.put('/admin/stock/:stockId', authenticateToken, requirePermission('can_edit_
     const updateValues = [];
 
     if (license_key !== undefined) {
-      // Check if new license key already exists for this product
-      const [keyCheck] = await pool.execute(`
-        SELECT id 
-        FROM product_stock 
-        WHERE license_key = ? AND id != ? AND customer_id = ?
-      `, [license_key, stockId, req.customer_id]);
-
-      if (keyCheck.length > 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'License key already exists'
-        });
-      }
-
+      // License key validation removed - allowing duplicates
       updateFields.push('license_key = ?');
       updateValues.push(license_key);
     }
@@ -4646,8 +4713,8 @@ app.post('/admin/stock/bulk', authenticateToken, requirePermission('can_edit_pro
       });
     }
 
-    // Filter out empty license keys and remove duplicates
-    const cleanKeys = [...new Set(license_keys.filter(key => key && key.trim()))];
+    // Filter out empty license keys (allow duplicates)
+    const cleanKeys = license_keys.filter(key => key && key.trim());
 
     if (cleanKeys.length === 0) {
       return res.status(400).json({
@@ -4656,46 +4723,25 @@ app.post('/admin/stock/bulk', authenticateToken, requirePermission('can_edit_pro
       });
     }
 
-    // Check for existing license keys
-    const [existingKeys] = await pool.execute(`
-      SELECT license_key 
-      FROM product_stock 
-      WHERE license_key IN (${cleanKeys.map(() => '?').join(',')}) 
-      AND product_id = ? AND customer_id = ?
-    `, [...cleanKeys, product_id, req.customer_id]);
-
-    const existingKeysList = existingKeys.map(row => row.license_key);
-    const newKeys = cleanKeys.filter(key => !existingKeysList.includes(key));
-
-    if (newKeys.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'All license keys already exist for this product',
-        existing_keys: existingKeysList
-      });
-    }
-
-    // Bulk insert new license keys
-    const insertValues = newKeys.map(key => [product_id, key, req.customer_id]);
+    // Bulk insert all license keys (duplicates allowed)
+    const insertValues = cleanKeys.map(key => [product_id, key, req.customer_id]);
     
     await pool.execute(
       `INSERT INTO product_stock (product_id, license_key, customer_id) VALUES ${insertValues.map(() => '(?, ?, ?)').join(', ')}`,
       insertValues.flat()
     );
 
-    // Update product stock count by the number of new keys added
+    // Update product stock count by the number of keys added
     await pool.execute(
       'UPDATE products SET stock = stock + ? WHERE id = ? AND customer_id = ?',
-      [newKeys.length, product_id, req.customer_id]
+      [cleanKeys.length, product_id, req.customer_id]
     );
 
     res.status(201).json({
       success: true,
-      message: `Successfully added ${newKeys.length} license keys`,
-      added_count: newKeys.length,
-      skipped_count: existingKeysList.length,
-      added_keys: newKeys,
-      existing_keys: existingKeysList
+      message: `Successfully added ${cleanKeys.length} license keys`,
+      added_count: cleanKeys.length,
+      added_keys: cleanKeys
     });
 
   } catch (error) {
