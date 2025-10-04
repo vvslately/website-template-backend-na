@@ -706,8 +706,10 @@ app.get('/get-web-config', async (req, res) => {
     const [configs] = await pool.execute(
       `SELECT id, owner_phone, site_name, site_logo, meta_title, meta_description, 
        meta_keywords, meta_author, discord_link, discord_webhook, banner_link, 
-       banner2_link, banner3_link, background_image, footer_image, load_logo, 
-       footer_logo, created_at, updated_at 
+       banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
+       navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
+       navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
+       footer_logo, ad_banner, created_at, updated_at 
        FROM config WHERE customer_id = ? ORDER BY id LIMIT 1`,
       [req.customer_id]
     );
@@ -738,10 +740,19 @@ app.get('/get-web-config', async (req, res) => {
         banner_link: config.banner_link,
         banner2_link: config.banner2_link,
         banner3_link: config.banner3_link,
+        navigation_banner_1: config.navigation_banner_1,
+        navigation_link_1: config.navigation_link_1,
+        navigation_banner_2: config.navigation_banner_2,
+        navigation_link_2: config.navigation_link_2,
+        navigation_banner_3: config.navigation_banner_3,
+        navigation_link_3: config.navigation_link_3,
+        navigation_banner_4: config.navigation_banner_4,
+        navigation_link_4: config.navigation_link_4,
         background_image: config.background_image,
         footer_image: config.footer_image,
         load_logo: config.load_logo,
         footer_logo: config.footer_logo,
+        ad_banner: config.ad_banner,
         created_at: config.created_at,
         updated_at: config.updated_at
       }
@@ -781,10 +792,19 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       banner_link,
       banner2_link,
       banner3_link,
+      navigation_banner_1,
+      navigation_link_1,
+      navigation_banner_2,
+      navigation_link_2,
+      navigation_banner_3,
+      navigation_link_3,
+      navigation_banner_4,
+      navigation_link_4,
       background_image,
       footer_image,
       load_logo,
-      footer_logo
+      footer_logo,
+      ad_banner
     } = req.body;
 
     // Check if config exists for this customer
@@ -868,6 +888,42 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateFields.push('footer_logo = ?');
       updateValues.push(footer_logo);
     }
+    if (ad_banner !== undefined) {
+      updateFields.push('ad_banner = ?');
+      updateValues.push(ad_banner);
+    }
+    if (navigation_banner_1 !== undefined) {
+      updateFields.push('navigation_banner_1 = ?');
+      updateValues.push(navigation_banner_1);
+    }
+    if (navigation_link_1 !== undefined) {
+      updateFields.push('navigation_link_1 = ?');
+      updateValues.push(navigation_link_1);
+    }
+    if (navigation_banner_2 !== undefined) {
+      updateFields.push('navigation_banner_2 = ?');
+      updateValues.push(navigation_banner_2);
+    }
+    if (navigation_link_2 !== undefined) {
+      updateFields.push('navigation_link_2 = ?');
+      updateValues.push(navigation_link_2);
+    }
+    if (navigation_banner_3 !== undefined) {
+      updateFields.push('navigation_banner_3 = ?');
+      updateValues.push(navigation_banner_3);
+    }
+    if (navigation_link_3 !== undefined) {
+      updateFields.push('navigation_link_3 = ?');
+      updateValues.push(navigation_link_3);
+    }
+    if (navigation_banner_4 !== undefined) {
+      updateFields.push('navigation_banner_4 = ?');
+      updateValues.push(navigation_banner_4);
+    }
+    if (navigation_link_4 !== undefined) {
+      updateFields.push('navigation_link_4 = ?');
+      updateValues.push(navigation_link_4);
+    }
 
     if (updateFields.length === 0) {
       return res.status(400).json({
@@ -896,8 +952,10 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
     const [updatedConfigs] = await pool.execute(
       `SELECT id, owner_phone, site_name, site_logo, meta_title, meta_description, 
        meta_keywords, meta_author, discord_link, discord_webhook, banner_link, 
-       banner2_link, banner3_link, background_image, footer_image, load_logo, 
-       footer_logo, created_at, updated_at 
+       banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
+       navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
+       navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
+       footer_logo, ad_banner, created_at, updated_at 
        FROM config WHERE customer_id = ?`,
       [req.customer_id]
     );
@@ -921,10 +979,19 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
         banner_link: updatedConfig.banner_link,
         banner2_link: updatedConfig.banner2_link,
         banner3_link: updatedConfig.banner3_link,
+        navigation_banner_1: updatedConfig.navigation_banner_1,
+        navigation_link_1: updatedConfig.navigation_link_1,
+        navigation_banner_2: updatedConfig.navigation_banner_2,
+        navigation_link_2: updatedConfig.navigation_link_2,
+        navigation_banner_3: updatedConfig.navigation_banner_3,
+        navigation_link_3: updatedConfig.navigation_link_3,
+        navigation_banner_4: updatedConfig.navigation_banner_4,
+        navigation_link_4: updatedConfig.navigation_link_4,
         background_image: updatedConfig.background_image,
         footer_image: updatedConfig.footer_image,
         load_logo: updatedConfig.load_logo,
         footer_logo: updatedConfig.footer_logo,
+        ad_banner: updatedConfig.ad_banner,
         created_at: updatedConfig.created_at,
         updated_at: updatedConfig.updated_at
       }
@@ -1144,12 +1211,27 @@ app.get('/categories/:categoryId/products', async (req, res) => {
       [categoryId, req.customer_id]
     );
 
+    // Calculate discounted prices for each product
+    const productsWithDiscount = products.map(product => {
+      const originalPrice = parseFloat(product.price);
+      const discountPercent = parseInt(product.discount_percent) || 0;
+      const discountedPrice = originalPrice * (1 - discountPercent / 100);
+      
+      return {
+        ...product,
+        original_price: originalPrice,
+        discounted_price: discountedPrice,
+        has_discount: discountPercent > 0,
+        discount_savings: originalPrice - discountedPrice
+      };
+    });
+
     res.json({
       success: true,
       message: 'Products retrieved successfully',
       category: categoryCheck[0],
-      products: products,
-      total: products.length
+      products: productsWithDiscount,
+      total: productsWithDiscount.length
     });
 
   } catch (error) {
@@ -1206,6 +1288,11 @@ app.get('/products/:productId', async (req, res) => {
 
     const product = products[0];
 
+    // Calculate discounted price for single product
+    const originalPrice = parseFloat(product.price);
+    const discountPercent = parseInt(product.discount_percent) || 0;
+    const discountedPrice = originalPrice * (1 - discountPercent / 100);
+
     res.json({
       success: true,
       message: 'Product retrieved successfully',
@@ -1217,6 +1304,10 @@ app.get('/products/:productId', async (req, res) => {
         title: product.title,
         subtitle: product.subtitle,
         price: product.price,
+        original_price: originalPrice,
+        discounted_price: discountedPrice,
+        has_discount: discountPercent > 0,
+        discount_savings: originalPrice - discountedPrice,
         reseller_price: product.reseller_price,
         stock: product.stock,
         duration: product.duration,
@@ -1265,7 +1356,7 @@ app.post('/purchase', authenticateToken, async (req, res) => {
 
     // Get product details
     const [products] = await connection.execute(
-      'SELECT id, title, price, stock FROM products WHERE id = ? AND isActive = 1',
+      'SELECT id, title, price, stock, discount_percent FROM products WHERE id = ? AND isActive = 1',
       [product_id]
     );
 
@@ -1313,7 +1404,13 @@ app.post('/purchase', authenticateToken, async (req, res) => {
     }
 
     const user = users[0];
-    const totalPrice = product.price * quantity;
+    
+    // Calculate discounted price
+    const originalPrice = parseFloat(product.price);
+    const discountPercent = parseInt(product.discount_percent) || 0;
+    const discountedPrice = originalPrice * (1 - discountPercent / 100);
+    const totalPrice = discountedPrice * quantity;
+    const totalDiscount = (originalPrice - discountedPrice) * quantity;
 
     // Check if user has enough money
     if (user.money < totalPrice) {
@@ -1344,7 +1441,7 @@ app.post('/purchase', authenticateToken, async (req, res) => {
       // Create transaction item
       const [itemResult] = await connection.execute(
         'INSERT INTO transaction_items (customer_id, bill_number, transaction_id, product_id, quantity, price, license_id) VALUES (?, ?, ?, ?, 1, ?, ?)',
-        [req.customer_id, billNumber, transactionId, product_id, product.price, stockItem.id]
+        [req.customer_id, billNumber, transactionId, product_id, discountedPrice, stockItem.id]
       );
 
       // Mark stock as sold
@@ -1390,8 +1487,16 @@ app.post('/purchase', authenticateToken, async (req, res) => {
       product: {
         id: product.id,
         title: product.title,
-        price: product.price,
+        original_price: originalPrice,
+        discounted_price: discountedPrice,
+        discount_percent: discountPercent,
+        total_discount: totalDiscount,
         quantity: quantity
+      },
+      summary: {
+        subtotal: originalPrice * quantity,
+        discount_applied: totalDiscount,
+        total_paid: totalPrice
       }
     });
 
@@ -1466,11 +1571,26 @@ app.get('/products', async (req, res) => {
       queryParams
     );
 
+    // Calculate discounted prices for each product
+    const productsWithDiscount = products.map(product => {
+      const originalPrice = parseFloat(product.price);
+      const discountPercent = parseInt(product.discount_percent) || 0;
+      const discountedPrice = originalPrice * (1 - discountPercent / 100);
+      
+      return {
+        ...product,
+        original_price: originalPrice,
+        discounted_price: discountedPrice,
+        has_discount: discountPercent > 0,
+        discount_savings: originalPrice - discountedPrice
+      };
+    });
+
     res.json({
       success: true,
       message: 'Products retrieved successfully',
-      products: products,
-      total: products.length,
+      products: productsWithDiscount,
+      total: productsWithDiscount.length,
       category_id: categoryId || null
     });
 
