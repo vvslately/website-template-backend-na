@@ -6,7 +6,7 @@ import cors from 'cors';
 import axios from 'axios';
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 
 // JWT Secret Key
 const JWT_SECRET = '32670cc39ca9333bedb30406cc22c4bc';
@@ -709,7 +709,7 @@ app.get('/get-web-config', async (req, res) => {
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, created_at, updated_at 
+       footer_logo, ad_banner, font_select, created_at, updated_at 
        FROM config WHERE customer_id = ? ORDER BY id LIMIT 1`,
       [req.customer_id]
     );
@@ -753,6 +753,7 @@ app.get('/get-web-config', async (req, res) => {
         load_logo: config.load_logo,
         footer_logo: config.footer_logo,
         ad_banner: config.ad_banner,
+        font_select: config.font_select,
         created_at: config.created_at,
         updated_at: config.updated_at
       }
@@ -804,7 +805,8 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       footer_image,
       load_logo,
       footer_logo,
-      ad_banner
+      ad_banner,
+      font_select
     } = req.body;
 
     // Check if config exists for this customer
@@ -924,6 +926,10 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateFields.push('navigation_link_4 = ?');
       updateValues.push(navigation_link_4);
     }
+    if (font_select !== undefined) {
+      updateFields.push('font_select = ?');
+      updateValues.push(font_select);
+    }
 
     if (updateFields.length === 0) {
       return res.status(400).json({
@@ -955,7 +961,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, created_at, updated_at 
+       footer_logo, ad_banner, font_select, created_at, updated_at 
        FROM config WHERE customer_id = ?`,
       [req.customer_id]
     );
@@ -992,6 +998,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
         load_logo: updatedConfig.load_logo,
         footer_logo: updatedConfig.footer_logo,
         ad_banner: updatedConfig.ad_banner,
+        font_select: updatedConfig.font_select,
         created_at: updatedConfig.created_at,
         updated_at: updatedConfig.updated_at
       }
@@ -1688,6 +1695,118 @@ app.get('/products', async (req, res) => {
 
   } catch (error) {
     console.error('Products error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Search products endpoint
+app.get('/search', async (req, res) => {
+  try {
+    const query = req.query.q;
+    const categoryId = req.query.category_id;
+    const customerId = req.query.customer_id || req.customer_id;
+
+    // Validate search query
+    if (!query || query.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Search query is required'
+      });
+    }
+
+    // Validate category ID if provided
+    if (categoryId && isNaN(categoryId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid category ID format'
+      });
+    }
+
+    // Validate customer ID if provided
+    if (customerId && isNaN(customerId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid customer ID format'
+      });
+    }
+
+    // Check if category exists for this customer (if category_id provided)
+    if (categoryId && customerId) {
+      const [categoryCheck] = await pool.execute(
+        'SELECT id, title FROM categories WHERE id = ? AND customer_id = ? AND isActive = 1',
+        [categoryId, customerId]
+      );
+
+      if (categoryCheck.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Category not found or inactive'
+        });
+      }
+    }
+
+    // Build search query - if no customer_id, search all products
+    let whereClause = 'p.isActive = 1 AND (p.title LIKE ? OR p.subtitle LIKE ?)';
+    let queryParams = [`%${query}%`, `%${query}%`];
+
+    // Add customer filter if customer_id is available
+    if (customerId) {
+      whereClause = 'p.customer_id = ? AND p.isActive = 1 AND (p.title LIKE ? OR p.subtitle LIKE ?)';
+      queryParams = [customerId, `%${query}%`, `%${query}%`];
+    }
+
+    // Add category filter if provided
+    if (categoryId) {
+      whereClause += ' AND p.category_id = ?';
+      queryParams.push(categoryId);
+    }
+
+    // Search products with category information
+    const [products] = await pool.execute(
+      `SELECT 
+        p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, p.stock, 
+        p.duration, p.image, p.download_link, p.isSpecial, p.featured, p.isActive, 
+        p.isWarrenty, p.warrenty_text, p.primary_color, p.secondary_color, 
+        p.created_at, p.priority, p.discount_percent, p.customer_id,
+        c.title as category_title, c.category as category_slug
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE ${whereClause}
+      ORDER BY p.priority DESC, p.title ASC`,
+      queryParams
+    );
+
+    // Calculate discounted prices for each product
+    const productsWithDiscount = products.map(product => {
+      const originalPrice = parseFloat(product.price);
+      const discountPercent = parseInt(product.discount_percent) || 0;
+      const discountedPrice = originalPrice * (1 - discountPercent / 100);
+      
+      return {
+        ...product,
+        original_price: originalPrice,
+        discounted_price: discountedPrice,
+        has_discount: discountPercent > 0,
+        discount_savings: originalPrice - discountedPrice
+      };
+    });
+
+    res.json({
+      success: true,
+      message: 'Search completed successfully',
+      products: productsWithDiscount,
+      total: productsWithDiscount.length,
+      query: query,
+      category_id: categoryId || null,
+      customer_id: customerId || null
+    });
+
+  } catch (error) {
+    console.error('Search error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -5969,6 +6088,8 @@ app.get('/stats', authenticateToken, requirePermission('can_edit_products'), asy
     });
   }
 });
+
+
 
 // Start server
 app.listen(PORT, () => {
