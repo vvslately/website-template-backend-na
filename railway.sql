@@ -242,7 +242,7 @@ CREATE TABLE `transaction_items` (
   CONSTRAINT `transaction_items_ibfk_1` FOREIGN KEY (`transaction_id`) REFERENCES `transactions` (`id`) ON DELETE CASCADE,
   CONSTRAINT `transaction_items_ibfk_2` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE CASCADE,
   CONSTRAINT `transaction_items_ibfk_3` FOREIGN KEY (`license_id`) REFERENCES `product_stock` (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=18 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=19 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 DROP TABLE IF EXISTS `transactions`;
 CREATE TABLE `transactions` (
@@ -257,7 +257,25 @@ CREATE TABLE `transactions` (
   KEY `idx_transactions_user_id` (`user_id`),
   KEY `idx_transactions_created_at` (`created_at`),
   CONSTRAINT `transactions_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=18 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=19 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+DROP TABLE IF EXISTS `reviews`;
+CREATE TABLE `reviews` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `customer_id` varchar(100) NOT NULL,
+  `user_id` int NOT NULL,
+  `review_text` text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `rating` tinyint unsigned DEFAULT NULL,
+  `is_active` tinyint(1) DEFAULT '1',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_reviews_customer_id` (`customer_id`),
+  KEY `idx_reviews_user_id` (`user_id`),
+  KEY `idx_reviews_created_at` (`created_at`),
+  CONSTRAINT `reviews_chk_1` CHECK ((`rating` between 1 and 5)),
+  CONSTRAINT `reviews_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 DROP TABLE IF EXISTS `users`;
 CREATE TABLE `users` (
@@ -272,7 +290,7 @@ CREATE TABLE `users` (
   `role` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT 'member',
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=59 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=62 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 INSERT INTO `auth_sites` (`id`, `customer_id`, `website_name`, `admin_user`, `admin_password`, `expiredDay`, `created_at`) VALUES
 (60, '8', 'modelv', 'modelv446681', '438ebbe4af5ef73a022863e3ccfb986a:207ab0bd5501e16f1d760ebfb1a1c333', '2025-11-08', '2025-10-08 12:06:09'),
@@ -281,16 +299,16 @@ INSERT INTO `categories` (`id`, `customer_id`, `parent_id`, `title`, `subtitle`,
 (68, '8', NULL, 'modelv Category', 'Category for modelv', 'https://img2.pic.in.th/pic/1640x500ebe7d18bc84a1cf6.png', 'modelv_category', 0, 1, 0, '2025-10-08 12:06:10'),
 (72, '9', NULL, 'death Category', 'Category for death', 'https://img2.pic.in.th/pic/1640x500ebe7d18bc84a1cf6.png', 'death_category', 0, 1, 0, '2025-10-10 14:47:07');
 INSERT INTO `config` (`id`, `customer_id`, `owner_phone`, `site_name`, `site_logo`, `meta_title`, `meta_description`, `meta_keywords`, `meta_author`, `discord_link`, `discord_webhook`, `banner_link`, `banner2_link`, `banner3_link`, `navigation_banner_1`, `navigation_link_1`, `navigation_banner_2`, `navigation_link_2`, `navigation_banner_3`, `navigation_link_3`, `navigation_banner_4`, `navigation_link_4`, `background_image`, `footer_image`, `load_logo`, `footer_logo`, `theme`, `font_select`, `created_at`, `updated_at`, `ad_banner`) VALUES
-(39, '8', '0000000000', 'modelv', 'https://img2.pic.in.th/pic/logodiscordf124e71a99293428.png', '(⭐) modelv - Digital Store', 'Welcome to modelv - Your trusted digital products store', 'digital, products, store, gaming', 'modelv Admin', NULL, NULL, 'https://img2.pic.in.th/pic/2000x500172fb60914209eb0.png', 'https://img2.pic.in.th/pic/2000x500172fb60914209eb0.png', 'https://img2.pic.in.th/pic/2000x500172fb60914209eb0.png', 'https://img5.pic.in.th/file/secure-sv1/admin7fb28187425843cd.png', 'https://discord.gg/kiddy', 'https://img2.pic.in.th/pic/review803654e30f3a3d94.png', 'https://modelv.vhouse.online/store', 'https://img5.pic.in.th/file/secure-sv1/shopping3629d6b65f35e02b.png', 'https://modelv.vhouse.online/store', 'https://img2.pic.in.th/pic/Topupdffe642023c882e1.png', 'https://modelv.vhouse.online/topup', NULL, NULL, 'https://img2.pic.in.th/pic/logodiscordf124e71a99293428.png', NULL, 'Dark mode', 'Prompt', '2025-10-08 12:06:13', '2025-10-08 12:58:38', 'https://img2.pic.in.th/pic/Untitled-2e1163155a929c6b9.webp'),
-(43, '9', '0000000000', 'death', 'https://img5.pic.in.th/file/secure-sv1/1500x1500232d3d161739dfd2.png', '(⭐) death - Digital Store', 'Welcome to death - Your trusted digital products store', 'digital, products, store, gaming', 'death Admin', NULL, NULL, 'https://img2.pic.in.th/pic/2000x500172fb60914209eb0.png', 'https://img2.pic.in.th/pic/2000x500172fb60914209eb0.png', 'https://img2.pic.in.th/pic/2000x500172fb60914209eb0.png', 'https://img5.pic.in.th/file/secure-sv1/1000x500.png', NULL, 'https://img5.pic.in.th/file/secure-sv1/1000x500.png', NULL, 'https://img5.pic.in.th/file/secure-sv1/1000x500.png', NULL, 'https://img5.pic.in.th/file/secure-sv1/1000x500.png', NULL, NULL, NULL, NULL, NULL, 'Dark mode', 'Prompt', '2025-10-10 14:47:09', '2025-10-10 14:47:09', 'https://img5.pic.in.th/file/secure-sv1/1500x1500232d3d161739dfd2.png');
+(39, '8', '0000000000', 'modelv', 'https://img2.pic.in.th/pic/logodiscordf124e71a99293428.png', '(⭐) modelv - Digital Store', 'Welcome to modelv - Your trusted digital products store', 'digital, products, store, gaming', 'เว็บขายสินค้าที่ดีที่สุด', 'discord.gg/kiddy', NULL, 'https://img2.pic.in.th/pic/2000x500172fb60914209eb0.png', 'https://img2.pic.in.th/pic/2000x500172fb60914209eb0.png', 'https://img2.pic.in.th/pic/2000x500172fb60914209eb0.png', 'https://img5.pic.in.th/file/secure-sv1/admin7fb28187425843cd.png', 'https://discord.gg/kiddy', 'https://img2.pic.in.th/pic/review803654e30f3a3d94.png', 'https://modelv.vhouse.online/store', 'https://img5.pic.in.th/file/secure-sv1/shopping3629d6b65f35e02b.png', 'https://modelv.vhouse.online/store', 'https://img2.pic.in.th/pic/Topupdffe642023c882e1.png', 'https://modelv.vhouse.online/topup', 'https://img2.pic.in.th/pic/123c17a0bcc1834aa16.png', NULL, 'https://img2.pic.in.th/pic/logodiscordf124e71a99293428.png', NULL, 'Dark mode', 'THAIRG', '2025-10-08 12:06:13', '2025-10-13 15:05:07', 'https://img2.pic.in.th/pic/Untitled-2e1163155a929c6b9.webp'),
+(43, '9', '0000000000', 'death', 'https://img5.pic.in.th/file/secure-sv1/1500x1500232d3d161739dfd2.png', '(⭐) death - Digital Store', 'Welcome to death - Your trusted digital products store', 'digital, products, store, gaming', 'death Admin', NULL, NULL, 'https://img2.pic.in.th/pic/2000x500172fb60914209eb0.png', 'https://img2.pic.in.th/pic/2000x500172fb60914209eb0.png', 'https://img2.pic.in.th/pic/2000x500172fb60914209eb0.png', 'https://img5.pic.in.th/file/secure-sv1/1000x500.png', NULL, 'https://img5.pic.in.th/file/secure-sv1/1000x500.png', NULL, 'https://img5.pic.in.th/file/secure-sv1/1000x500.png', NULL, 'https://img5.pic.in.th/file/secure-sv1/1000x500.png', NULL, NULL, NULL, NULL, NULL, 'Dark mode', 'Prompt', '2025-10-10 14:47:09', '2025-10-13 14:56:17', 'https://img5.pic.in.th/file/secure-sv1/1500x1500232d3d161739dfd2.png');
 INSERT INTO `product_stock` (`id`, `customer_id`, `product_id`, `license_key`, `sold`, `created_at`) VALUES
-(1038, '8', 79, 'ddsadas', 0, '2025-10-08 12:51:42'),
+(1038, '8', 79, 'ddsadas', 1, '2025-10-08 12:51:42'),
 (1039, '8', 79, 'dsad', 0, '2025-10-08 12:51:42'),
 (1040, '8', 79, 'sadas', 0, '2025-10-08 12:51:42'),
 (1041, '8', 79, 'dasdas', 0, '2025-10-08 12:51:42'),
 (1042, '8', 79, 'dsadasdsa', 0, '2025-10-08 12:51:42');
 INSERT INTO `products` (`id`, `customer_id`, `category_id`, `title`, `subtitle`, `price`, `reseller_price`, `stock`, `duration`, `image`, `download_link`, `isSpecial`, `featured`, `isActive`, `isWarrenty`, `warrenty_text`, `primary_color`, `secondary_color`, `created_at`, `priority`, `discount_percent`) VALUES
-(79, '8', 68, 'Sample Product', 'This is a sample product for your new site', '10.00', '8.00', 105, '30 days', 'https://img5.pic.in.th/file/secure-sv1/1500x1500232d3d161739dfd2.png', NULL, 0, 1, 1, 0, NULL, '#ff0000', '#b3ffc7', '2025-10-08 12:06:13', 0, 0),
+(79, '8', 68, 'Sample Product', 'This is a sample product for your new site', '10.00', '8.00', 4, '30 days', 'https://img5.pic.in.th/file/secure-sv1/1500x1500232d3d161739dfd2.png', NULL, 0, 1, 1, 0, NULL, '#ff0000', '#b3ffc7', '2025-10-08 12:06:13', 0, 0),
 (83, '9', 72, 'Sample Product', 'This is a sample product for your new site', '10.00', '8.00', 100, '30 days', 'https://img5.pic.in.th/file/secure-sv1/1500x1500232d3d161739dfd2.png', NULL, 0, 1, 1, 0, NULL, '#ff0000', '#b3ffc7', '2025-10-10 14:47:09', 0, 0);
 INSERT INTO `resell_config` (`id`, `phone_number`, `owner_name`, `owner_bank`, `website_name`, `Model1_price`, `Model1_resell_price`, `Model1_name`, `Model1_1500x1500Banner`, `Model1_2000x500Banner`, `Model1_1000x500Banner`, `Model1_1640x500Banner`, `created_at`, `updated_at`) VALUES
 (1, '0843460416', 'Somchai Sang', '123-456789-0', 'somchai-store.com', '159.00', '159.00', 'ModelV', '', '', 'https://img5.pic.in.th/file/secure-sv1/1000x500.png', 'https://img2.pic.in.th/pic/1640x500ebe7d18bc84a1cf6.png', '2025-10-10 11:02:48', '2025-10-10 14:46:55');
@@ -339,11 +357,21 @@ INSERT INTO `theme_settings` (`id`, `customer_id`, `primary_color`, `secondary_c
 (47, '8', '#2994ff', '#29f8ff', '#ffffff', '#000000', '2025-10-08 12:15:52', 'dark'),
 (51, '9', '#2994ff', '#29f8ff', '#FFFFFF', '#000000', '2025-10-10 14:47:07', 'dark');
 
+INSERT INTO `reviews` (`id`, `customer_id`, `user_id`, `review_text`, `rating`, `is_active`, `created_at`, `updated_at`) VALUES
+(1, '8', 60, 'ร้านนี้ดีมากครับ สินค้าคุณภาพดี บริการรวดเร็ว แนะนำเลย!', 5, 1, '2025-10-13 15:30:00', '2025-10-13 15:30:00'),
+(2, '9', 61, 'บริการดีมากครับ ได้รับสินค้าตรงเวลา ราคาเหมาะสม', 4, 1, '2025-10-13 16:00:00', '2025-10-13 16:00:00'),
+(3, '8', 60, 'สินค้าดีมาก แต่การจัดส่งช้าหน่อย แต่โดยรวมโอเค', 3, 1, '2025-10-13 16:30:00', '2025-10-13 16:30:00');
 
-
+INSERT INTO `transaction_items` (`id`, `customer_id`, `bill_number`, `transaction_id`, `product_id`, `quantity`, `price`, `created_at`, `license_id`) VALUES
+(18, '8', 'BILL-1760368286484-MIDL1VHRR', 18, 79, 1, '10.00', '2025-10-13 15:11:27', 1038);
+INSERT INTO `transactions` (`id`, `customer_id`, `bill_number`, `user_id`, `total_price`, `created_at`, `updated_at`) VALUES
+(18, '8', 'BILL-1760368286484-MIDL1VHRR', 60, '10.00', '2025-10-13 15:11:26', '2025-10-13 15:11:26');
 INSERT INTO `users` (`id`, `customer_id`, `discord_id`, `fullname`, `email`, `password`, `money`, `points`, `role`, `created_at`) VALUES
 (52, '8', NULL, 'modelv Admin', 'modelv446681@gmail.com', '$2a$10$IcdbBBBLvBwuHSva2P7JSOTImxjuJmZaAsee1Mm55hN6yLaQMJheK', '0.00', 0, 'admin', '2025-10-08 12:06:12'),
-(58, '9', NULL, 'death Admin', 'death299265@gmail.com', '$2a$10$ABfWQYsWVnM0/izAcWkmoep3ji9E3Jf0rTKongdBBP75IQ45yqpki', '0.00', 0, 'admin', '2025-10-10 14:47:08');
+(58, '9', NULL, 'death Admin', 'death299265@gmail.com', '$2a$10$ABfWQYsWVnM0/izAcWkmoep3ji9E3Jf0rTKongdBBP75IQ45yqpki', '0.00', 0, 'admin', '2025-10-10 14:47:08'),
+(59, '9', NULL, 'Death', 'Teerachat20005xxx@gmail.com', '$2b$10$AxmL7N0QuduyypQstWYKZu8dAFftYyBoDuttOGy8oWpB9Ie.oDXD.', '0.00', 0, 'admin', '2025-10-13 12:25:55'),
+(60, '8', '257164973552304130', 'kiddyxstore4', 'beamkinger@gmail.com', '$2b$10$vzZ6MU8kPdNKWqLfAivNDOByYT8QbESO0EIGOCtH5E1bo/FqO3dZK', '99989.00', 0, 'admin', '2025-10-13 14:54:55'),
+(61, '9', NULL, 'admin', 'admin@gmail.com', '$2b$10$lahNgQ6Foeig2zHApbrsBePeHeWbrhionfquMY1nsUc415WOXxWm2', '0.00', 0, 'admin', '2025-10-13 14:55:34');
 
 
 /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;

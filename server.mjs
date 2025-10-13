@@ -1815,6 +1815,247 @@ app.get('/search', async (req, res) => {
   }
 });
 
+
+// Get all reviews endpoint (simple select without query parameters)
+app.get('/reviews/all', async (req, res) => {
+  try {
+    // Use customer_id from multi-tenant middleware only
+    const customerId = req.customer_id;
+
+    // Validate customer ID from multi-tenant middleware
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer ID not found. Please check your subdomain or website configuration.'
+      });
+    }
+
+    // Get all reviews with user information (no pagination, no query parameters)
+    const [reviews] = await pool.execute(
+      `SELECT 
+        r.id, r.customer_id, r.user_id, r.review_text, r.rating, 
+        r.is_active, r.created_at, r.updated_at,
+        u.fullname as user_name, u.email as user_email
+      FROM reviews r
+      LEFT JOIN users u ON r.user_id = u.id
+      WHERE r.is_active = 1 AND r.customer_id = ?
+      ORDER BY r.created_at DESC`,
+      [customerId]
+    );
+
+    res.json({
+      success: true,
+      data: reviews,
+      total: reviews.length,
+      customer_id: customerId
+    });
+
+  } catch (error) {
+    console.error('All reviews error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Create review endpoint
+app.post('/reviews', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const customerId = req.customer_id;
+    const { review_text, rating } = req.body;
+
+    // Check if customer_id is available
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    // Validate required fields
+    if (!review_text || review_text.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Review text is required'
+      });
+    }
+
+    // Validate rating if provided
+    if (rating && (isNaN(rating) || rating < 1 || rating > 5)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rating must be between 1 and 5'
+      });
+    }
+
+    // Check if user already reviewed this customer
+    const [existingReview] = await pool.execute(
+      'SELECT id FROM reviews WHERE customer_id = ? AND user_id = ? AND is_active = 1',
+      [customerId, userId]
+    );
+
+    if (existingReview.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'You have already reviewed this store'
+      });
+    }
+
+    // Create review
+    const [result] = await pool.execute(
+      'INSERT INTO reviews (customer_id, user_id, review_text, rating) VALUES (?, ?, ?, ?)',
+      [customerId, userId, review_text.trim(), rating || null]
+    );
+
+    res.json({
+      success: true,
+      message: 'Review created successfully',
+      review_id: result.insertId
+    });
+
+  } catch (error) {
+    console.error('Create review error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Update review endpoint
+app.put('/reviews/:id', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const customerId = req.customer_id;
+    const reviewId = req.params.id;
+    const { review_text, rating } = req.body;
+
+    // Check if customer_id is available
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    // Validate review ID
+    if (!reviewId || isNaN(reviewId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid review ID is required'
+      });
+    }
+
+    // Check if review exists and belongs to user
+    const [existingReview] = await pool.execute(
+      'SELECT id FROM reviews WHERE id = ? AND user_id = ? AND customer_id = ? AND is_active = 1',
+      [reviewId, userId, customerId]
+    );
+
+    if (existingReview.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Review not found or you do not have permission to edit it'
+      });
+    }
+
+    // Validate fields
+    if (!review_text || review_text.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Review text is required'
+      });
+    }
+
+    if (rating && (isNaN(rating) || rating < 1 || rating > 5)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rating must be between 1 and 5'
+      });
+    }
+
+    // Update review
+    await pool.execute(
+      'UPDATE reviews SET review_text = ?, rating = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [review_text.trim(), rating || null, reviewId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Review updated successfully'
+    });
+
+  } catch (error) {
+    console.error('Update review error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Delete review endpoint
+app.delete('/reviews/:id', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const customerId = req.customer_id;
+    const reviewId = req.params.id;
+
+    // Check if customer_id is available
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    // Validate review ID
+    if (!reviewId || isNaN(reviewId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid review ID is required'
+      });
+    }
+
+    // Check if review exists and belongs to user
+    const [existingReview] = await pool.execute(
+      'SELECT id FROM reviews WHERE id = ? AND user_id = ? AND customer_id = ? AND is_active = 1',
+      [reviewId, userId, customerId]
+    );
+
+    if (existingReview.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Review not found or you do not have permission to delete it'
+      });
+    }
+
+    // Soft delete review (set is_active to 0)
+    await pool.execute(
+      'UPDATE reviews SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [reviewId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Review deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete review error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
 // Get user's transactions endpoint
 app.get('/my-transactions', authenticateToken, async (req, res) => {
   try {
@@ -6088,6 +6329,7 @@ app.get('/stats', authenticateToken, requirePermission('can_edit_products'), asy
     });
   }
 });
+
 
 
 
