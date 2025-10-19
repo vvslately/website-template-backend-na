@@ -702,14 +702,16 @@ app.get('/get-web-config', async (req, res) => {
       });
     }
 
-    // Get config for specific customer (excluding theme)
+    // Get config for specific customer (including PromptPay fields)
     const [configs] = await pool.execute(
       `SELECT id, owner_phone, site_name, site_logo, meta_title, meta_description, 
        meta_keywords, meta_author, discord_link, discord_webhook, banner_link, 
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, font_select, created_at, updated_at 
+       footer_logo, ad_banner, font_select, promptpay_number, promptpay_name, 
+       line_cookie, line_mac, verify_token, last_check, auto_verify_enabled,
+       created_at, updated_at 
        FROM config WHERE customer_id = ? ORDER BY id LIMIT 1`,
       [req.customer_id]
     );
@@ -754,6 +756,14 @@ app.get('/get-web-config', async (req, res) => {
         footer_logo: config.footer_logo,
         ad_banner: config.ad_banner,
         font_select: config.font_select,
+        // PromptPay configuration fields
+        promptpay_number: config.promptpay_number,
+        promptpay_name: config.promptpay_name,
+        line_cookie: config.line_cookie,
+        line_mac: config.line_mac,
+        verify_token: config.verify_token,
+        last_check: config.last_check,
+        auto_verify_enabled: config.auto_verify_enabled,
         created_at: config.created_at,
         updated_at: config.updated_at
       }
@@ -806,7 +816,14 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       load_logo,
       footer_logo,
       ad_banner,
-      font_select
+      font_select,
+      // PromptPay configuration fields
+      promptpay_number,
+      promptpay_name,
+      line_cookie,
+      line_mac,
+      verify_token,
+      auto_verify_enabled
     } = req.body;
 
     // Check if config exists for this customer
@@ -930,6 +947,32 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateFields.push('font_select = ?');
       updateValues.push(font_select);
     }
+    
+    // PromptPay configuration fields
+    if (promptpay_number !== undefined) {
+      updateFields.push('promptpay_number = ?');
+      updateValues.push(promptpay_number);
+    }
+    if (promptpay_name !== undefined) {
+      updateFields.push('promptpay_name = ?');
+      updateValues.push(promptpay_name);
+    }
+    if (line_cookie !== undefined) {
+      updateFields.push('line_cookie = ?');
+      updateValues.push(line_cookie);
+    }
+    if (line_mac !== undefined) {
+      updateFields.push('line_mac = ?');
+      updateValues.push(line_mac);
+    }
+    if (verify_token !== undefined) {
+      updateFields.push('verify_token = ?');
+      updateValues.push(verify_token);
+    }
+    if (auto_verify_enabled !== undefined) {
+      updateFields.push('auto_verify_enabled = ?');
+      updateValues.push(auto_verify_enabled ? 1 : 0);
+    }
 
     if (updateFields.length === 0) {
       return res.status(400).json({
@@ -961,7 +1004,9 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, font_select, created_at, updated_at 
+       footer_logo, ad_banner, font_select, promptpay_number, promptpay_name, 
+       line_cookie, line_mac, verify_token, last_check, auto_verify_enabled,
+       created_at, updated_at 
        FROM config WHERE customer_id = ?`,
       [req.customer_id]
     );
@@ -999,6 +1044,14 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
         footer_logo: updatedConfig.footer_logo,
         ad_banner: updatedConfig.ad_banner,
         font_select: updatedConfig.font_select,
+        // PromptPay configuration fields
+        promptpay_number: updatedConfig.promptpay_number,
+        promptpay_name: updatedConfig.promptpay_name,
+        line_cookie: updatedConfig.line_cookie,
+        line_mac: updatedConfig.line_mac,
+        verify_token: updatedConfig.verify_token,
+        last_check: updatedConfig.last_check,
+        auto_verify_enabled: updatedConfig.auto_verify_enabled,
         created_at: updatedConfig.created_at,
         updated_at: updatedConfig.updated_at
       }
@@ -6338,6 +6391,550 @@ app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
   console.log(`Test database connection at: http://localhost:${PORT}/test-db`);
 });
+
+// ==================== PROMPTPAY PAYMENT SYSTEM ====================
+
+// Helper function to generate PromptPay QR code
+function generatePromptPayQR(promptpayNumber, amount) {
+  // Format: 00020101021229370016A00000067701011101130066801234567890253037645802TH5406100.0053037646304
+  const qrData = `00020101021229370016A00000067701011101130066${promptpayNumber}0253037645802TH5406${amount.toFixed(2)}53037646304`;
+  return qrData;
+}
+
+// Helper function to parse LINE transaction data
+function parseLineTransactionData(jsonString, targetAmount) {
+  try {
+    const data = JSON.parse(jsonString);
+    if (!Array.isArray(data)) {
+      return { status: 'error', message: 'รูปแบบข้อมูลไม่ถูกต้อง' };
+    }
+
+    const matchedTransactions = [];
+
+    for (const transaction of data) {
+      if (!transaction?.contentMetadata?.FLEX_JSON) {
+        continue;
+      }
+
+      try {
+        const flexJson = JSON.parse(transaction.contentMetadata.FLEX_JSON);
+        if (!flexJson?.contents?.[0]?.body?.contents) {
+          continue;
+        }
+
+        // Extract amount from transaction
+        const amountText = flexJson.contents[0].body.contents[2]?.contents[1]?.contents[1]?.text || '';
+        const cleanAmount = amountText.replace(/[บาท,]/g, '').trim();
+        
+        if (!isNumeric(cleanAmount)) {
+          continue;
+        }
+
+        const amount = parseFloat(cleanAmount);
+        if (amount === targetAmount) {
+          const formattedAmount = amount.toFixed(2);
+          const [whole, fractional] = formattedAmount.split('.');
+          
+          matchedTransactions.push({
+            transactionid: transaction.id || null,
+            amount: formattedAmount,
+            whole_part: whole,
+            fractional_part: fractional,
+            time: flexJson.contents[0].body.contents[0]?.contents[1]?.contents[1]?.text || 'ไม่ระบุเวลา'
+          });
+        }
+      } catch (parseError) {
+        console.error('Error parsing FLEX_JSON:', parseError);
+        continue;
+      }
+    }
+
+    return {
+      status: 'success',
+      message: 'ดึงจำนวนเงินที่ตรงกันเรียบร้อย',
+      matched_transactions: matchedTransactions
+    };
+  } catch (error) {
+    return { status: 'error', message: 'รูปแบบข้อมูลไม่ถูกต้อง' };
+  }
+}
+
+// Helper function to check if string is numeric
+function isNumeric(str) {
+  return !isNaN(str) && !isNaN(parseFloat(str));
+}
+
+// Create PromptPay payment request
+app.post('/api/promptpay/create', authenticateToken, async (req, res) => {
+  try {
+    const { amount } = req.body;
+    
+    if (!amount) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'กรุณาระบุจำนวนเงิน' 
+      });
+    }
+
+    if (!req.customer_id) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'ไม่พบข้อมูลร้านค้า' 
+      });
+    }
+
+    // Check if customer_id matches token
+    if (req.user.customer_id !== req.customer_id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied - customer mismatch'
+      });
+    }
+
+    // Get PromptPay configuration
+    const [configRows] = await pool.execute(
+      'SELECT promptpay_number, promptpay_name FROM config WHERE customer_id = ?',
+      [req.customer_id]
+    );
+
+    if (configRows.length === 0 || !configRows[0].promptpay_number) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'ยังไม่ได้ตั้งค่าพร้อมเพย์' 
+      });
+    }
+
+    const config = configRows[0];
+    const qrCode = generatePromptPayQR(config.promptpay_number, parseFloat(amount));
+    
+    // Set expiration time (15 minutes from now)
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    
+    // Create payment record
+    const [result] = await pool.execute(
+      'INSERT INTO promptpay_payments (customer_id, user_id, amount, qr_code, expires_at) VALUES (?, ?, ?, ?, ?)',
+      [req.customer_id, req.user.id, amount, qrCode, expiresAt]
+    );
+
+    res.json({
+      success: true,
+      message: 'สร้าง QR Code สำเร็จ',
+      data: {
+        payment_id: result.insertId,
+        qr_code: qrCode,
+        amount: amount,
+        promptpay_name: config.promptpay_name,
+        expires_at: expiresAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Error creating PromptPay payment:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'เกิดข้อผิดพลาดในการสร้าง QR Code' 
+    });
+  }
+});
+
+// Verify PromptPay payment using LINE API
+app.post('/api/promptpay/verify', authenticateToken, async (req, res) => {
+  try {
+    const { payment_id, amount } = req.body;
+    
+    if (!payment_id || !amount) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'กรุณาระบุรหัสการชำระเงินและจำนวนเงิน' 
+      });
+    }
+
+    if (!req.customer_id) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'ไม่พบข้อมูลร้านค้า' 
+      });
+    }
+
+    // Check if customer_id matches token
+    if (req.user.customer_id !== req.customer_id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied - customer mismatch'
+      });
+    }
+
+    // Get payment record
+    const [paymentRows] = await pool.execute(
+      'SELECT * FROM promptpay_payments WHERE id = ? AND customer_id = ? AND user_id = ? AND status = "pending"',
+      [payment_id, req.customer_id, req.user.id]
+    );
+
+    if (paymentRows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'ไม่พบรายการชำระเงินหรือชำระเงินแล้ว' 
+      });
+    }
+
+    const payment = paymentRows[0];
+
+    // Check if payment has expired
+    if (new Date() > new Date(payment.expires_at)) {
+      await pool.execute(
+        'UPDATE promptpay_payments SET status = "expired" WHERE id = ?',
+        [payment_id]
+      );
+      return res.status(400).json({ 
+        success: false, 
+        message: 'QR Code หมดอายุแล้ว' 
+      });
+    }
+
+    // Get LINE configuration
+    const [configRows] = await pool.execute(
+      'SELECT line_cookie, line_mac FROM config WHERE customer_id = ?',
+      [req.customer_id]
+    );
+
+    if (configRows.length === 0 || !configRows[0].line_cookie || !configRows[0].line_mac) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'ยังไม่ได้ตั้งค่า LINE API' 
+      });
+    }
+
+    const config = configRows[0];
+
+    // Call LINE API to get recent messages
+    const lineResponse = await axios.post(
+      'https://line-chrome-gw.line-apps.com/api/talk/thrift/Talk/TalkService/getRecentMessagesV2',
+      '["UhtGarPE25BUuiorh3UnzO1ATI6kNy1PJIhciE587DBg",50]',
+      {
+        headers: {
+          'accept': 'application/json, text/plain, */*',
+          'accept-language': 'en-US',
+          'content-type': 'application/json',
+          'origin': 'chrome-extension://ophjlpahpchlmihnnnihgmmeilfjmjjc',
+          'priority': 'u=1, i',
+          'sec-ch-ua': '"Not)A;Brand";v="8", "Chromium";v="138", "Google Chrome";v="138"',
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': '"Windows"',
+          'sec-fetch-dest': 'empty',
+          'sec-fetch-mode': 'cors',
+          'sec-fetch-site': 'none',
+          'sec-fetch-storage-access': 'active',
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+          'x-hmac': config.line_mac,
+          'x-lal': 'en_US',
+          'x-line-access': config.line_cookie,
+          'x-line-chrome-version': '3.7.1',
+          'Cookie': `lct=${config.line_cookie}`
+        }
+      }
+    );
+
+    // Parse LINE transaction data
+    const jsonString = JSON.stringify(lineResponse.data.data);
+    const parseResult = parseLineTransactionData(jsonString, parseFloat(amount));
+
+    if (parseResult.status === 'success' && parseResult.matched_transactions.length > 0) {
+      // Payment verified
+      const transaction = parseResult.matched_transactions[0];
+      
+      await pool.execute(
+        'UPDATE promptpay_payments SET status = "verified", transaction_id = ?, verified_at = NOW() WHERE id = ?',
+        [transaction.transactionid, payment_id]
+      );
+
+      // Update last check time
+      await pool.execute(
+        'UPDATE config SET last_check = NOW() WHERE customer_id = ?',
+        [req.customer_id]
+      );
+
+      res.json({
+        success: true,
+        message: 'ยืนยันการชำระเงินสำเร็จ',
+        data: {
+          payment_id: payment_id,
+          transaction_id: transaction.transactionid,
+          amount: transaction.amount,
+          verified_at: new Date()
+        }
+      });
+    } else {
+      res.json({
+        success: false,
+        message: 'ยังไม่พบการชำระเงิน กรุณาลองใหม่อีกครั้ง',
+        data: {
+          payment_id: payment_id,
+          amount: amount
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error('Error verifying PromptPay payment:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'เกิดข้อผิดพลาดในการตรวจสอบการชำระเงิน' 
+    });
+  }
+});
+
+// Get payment status
+app.get('/api/promptpay/status/:payment_id', authenticateToken, async (req, res) => {
+  try {
+    const { payment_id } = req.params;
+    
+    if (!req.customer_id) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'ไม่พบข้อมูลร้านค้า' 
+      });
+    }
+
+    // Check if customer_id matches token
+    if (req.user.customer_id !== req.customer_id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied - customer mismatch'
+      });
+    }
+
+    const [paymentRows] = await pool.execute(
+      'SELECT * FROM promptpay_payments WHERE id = ? AND customer_id = ? AND user_id = ?',
+      [payment_id, req.customer_id, req.user.id]
+    );
+
+    if (paymentRows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'ไม่พบรายการชำระเงิน' 
+      });
+    }
+
+    const payment = paymentRows[0];
+    
+    // Check if payment has expired
+    if (payment.status === 'pending' && new Date() > new Date(payment.expires_at)) {
+      await pool.execute(
+        'UPDATE promptpay_payments SET status = "expired" WHERE id = ?',
+        [payment_id]
+      );
+      payment.status = 'expired';
+    }
+
+    res.json({
+      success: true,
+      data: {
+        payment_id: payment.id,
+        status: payment.status,
+        amount: payment.amount,
+        created_at: payment.created_at,
+        expires_at: payment.expires_at,
+        verified_at: payment.verified_at,
+        transaction_id: payment.transaction_id
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting payment status:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'เกิดข้อผิดพลาดในการดึงสถานะการชำระเงิน' 
+    });
+  }
+});
+
+// Update PromptPay configuration
+app.post('/api/admin/promptpay/config', async (req, res) => {
+  try {
+    const { 
+      promptpay_number, 
+      promptpay_name, 
+      line_cookie, 
+      line_mac, 
+      verify_token, 
+      auto_verify_enabled 
+    } = req.body;
+
+    if (!req.customer_id) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'ไม่พบข้อมูลร้านค้า' 
+      });
+    }
+
+    // Check if config exists
+    const [existingConfig] = await pool.execute(
+      'SELECT id FROM config WHERE customer_id = ?',
+      [req.customer_id]
+    );
+
+    if (existingConfig.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'ไม่พบการตั้งค่าร้านค้า' 
+      });
+    }
+
+    // Update configuration
+    await pool.execute(
+      `UPDATE config SET 
+       promptpay_number = ?, 
+       promptpay_name = ?, 
+       line_cookie = ?, 
+       line_mac = ?, 
+       verify_token = ?, 
+       auto_verify_enabled = ?,
+       updated_at = NOW()
+       WHERE customer_id = ?`,
+      [
+        promptpay_number || null,
+        promptpay_name || null,
+        line_cookie || null,
+        line_mac || null,
+        verify_token || null,
+        auto_verify_enabled !== undefined ? auto_verify_enabled : 1,
+        req.customer_id
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: 'อัปเดตการตั้งค่าพร้อมเพย์สำเร็จ'
+    });
+
+  } catch (error) {
+    console.error('Error updating PromptPay config:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'เกิดข้อผิดพลาดในการอัปเดตการตั้งค่า' 
+    });
+  }
+});
+
+// Get PromptPay configuration
+app.get('/api/admin/promptpay/config', async (req, res) => {
+  try {
+    if (!req.customer_id) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'ไม่พบข้อมูลร้านค้า' 
+      });
+    }
+
+    const [configRows] = await pool.execute(
+      'SELECT promptpay_number, promptpay_name, line_cookie, line_mac, verify_token, auto_verify_enabled, last_check FROM config WHERE customer_id = ?',
+      [req.customer_id]
+    );
+
+    if (configRows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'ไม่พบการตั้งค่าร้านค้า' 
+      });
+    }
+
+    const config = configRows[0];
+    
+    // Don't expose sensitive data
+    res.json({
+      success: true,
+      data: {
+        promptpay_number: config.promptpay_number,
+        promptpay_name: config.promptpay_name,
+        auto_verify_enabled: config.auto_verify_enabled,
+        last_check: config.last_check,
+        has_line_config: !!(config.line_cookie && config.line_mac),
+        has_verify_token: !!config.verify_token
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting PromptPay config:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'เกิดข้อผิดพลาดในการดึงการตั้งค่า' 
+    });
+  }
+});
+
+// Auto verification system (runs every 30 seconds)
+setInterval(async () => {
+  try {
+    // Get all pending payments that haven't expired
+    const [pendingPayments] = await pool.execute(
+      'SELECT pp.*, c.line_cookie, c.line_mac FROM promptpay_payments pp JOIN config c ON pp.customer_id = c.customer_id WHERE pp.status = "pending" AND pp.expires_at > NOW() AND c.auto_verify_enabled = 1 AND c.line_cookie IS NOT NULL AND c.line_mac IS NOT NULL'
+    );
+
+    for (const payment of pendingPayments) {
+      try {
+        // Call LINE API
+        const lineResponse = await axios.post(
+          'https://line-chrome-gw.line-apps.com/api/talk/thrift/Talk/TalkService/getRecentMessagesV2',
+          '["UhtGarPE25BUuiorh3UnzO1ATI6kNy1PJIhciE587DBg",50]',
+          {
+            headers: {
+              'accept': 'application/json, text/plain, */*',
+              'accept-language': 'en-US',
+              'content-type': 'application/json',
+              'origin': 'chrome-extension://ophjlpahpchlmihnnnihgmmeilfjmjjc',
+              'priority': 'u=1, i',
+              'sec-ch-ua': '"Not)A;Brand";v="8", "Chromium";v="138", "Google Chrome";v="138"',
+              'sec-ch-ua-mobile': '?0',
+              'sec-ch-ua-platform': '"Windows"',
+              'sec-fetch-dest': 'empty',
+              'sec-fetch-mode': 'cors',
+              'sec-fetch-site': 'none',
+              'sec-fetch-storage-access': 'active',
+              'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+              'x-hmac': payment.line_mac,
+              'x-lal': 'en_US',
+              'x-line-access': payment.line_cookie,
+              'x-line-chrome-version': '3.7.1',
+              'Cookie': `lct=${payment.line_cookie}`
+            }
+          }
+        );
+
+        // Parse LINE transaction data
+        const jsonString = JSON.stringify(lineResponse.data.data);
+        const parseResult = parseLineTransactionData(jsonString, parseFloat(payment.amount));
+
+        if (parseResult.status === 'success' && parseResult.matched_transactions.length > 0) {
+          const transaction = parseResult.matched_transactions[0];
+          
+          // Update payment status
+          await pool.execute(
+            'UPDATE promptpay_payments SET status = "verified", transaction_id = ?, verified_at = NOW() WHERE id = ?',
+            [transaction.transactionid, payment.id]
+          );
+
+          // Update last check time
+          await pool.execute(
+            'UPDATE config SET last_check = NOW() WHERE customer_id = ?',
+            [payment.customer_id]
+          );
+
+          console.log(`Auto-verified payment ${payment.id} for amount ${payment.amount}`);
+        }
+      } catch (error) {
+        console.error(`Error auto-verifying payment ${payment.id}:`, error);
+      }
+    }
+
+    // Mark expired payments
+    await pool.execute(
+      'UPDATE promptpay_payments SET status = "expired" WHERE status = "pending" AND expires_at <= NOW()'
+    );
+
+  } catch (error) {
+    console.error('Error in auto verification system:', error);
+  }
+}, 30000); // Run every 30 seconds
 
 // Graceful shutdown
 process.on('SIGINT', async () => {
