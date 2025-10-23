@@ -47,7 +47,8 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
 // Multi-tenant middleware - Extract subdomain and find customer_id
 const multiTenantMiddleware = async (req, res, next) => {
@@ -709,7 +710,9 @@ app.get('/get-web-config', async (req, res) => {
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, font_select, promptpay_number, promptpay_name, 
+       footer_logo, theme, ad_banner, font_select, 
+       bank_account_name, bank_account_number, bank_account_name_thai,
+       promptpay_number, promptpay_name, 
        line_cookie, line_mac, verify_token, last_check, auto_verify_enabled,
        created_at, updated_at 
        FROM config WHERE customer_id = ? ORDER BY id LIMIT 1`,
@@ -754,8 +757,13 @@ app.get('/get-web-config', async (req, res) => {
         footer_image: config.footer_image,
         load_logo: config.load_logo,
         footer_logo: config.footer_logo,
+        theme: config.theme,
         ad_banner: config.ad_banner,
         font_select: config.font_select,
+        // Bank account fields
+        bank_account_name: config.bank_account_name,
+        bank_account_number: config.bank_account_number,
+        bank_account_name_thai: config.bank_account_name_thai,
         // PromptPay configuration fields
         promptpay_number: config.promptpay_number,
         promptpay_name: config.promptpay_name,
@@ -815,8 +823,13 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       footer_image,
       load_logo,
       footer_logo,
+      theme,
       ad_banner,
       font_select,
+      // Bank account fields
+      bank_account_name,
+      bank_account_number,
+      bank_account_name_thai,
       // PromptPay configuration fields
       promptpay_number,
       promptpay_name,
@@ -907,6 +920,10 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateFields.push('footer_logo = ?');
       updateValues.push(footer_logo);
     }
+    if (theme !== undefined) {
+      updateFields.push('theme = ?');
+      updateValues.push(theme);
+    }
     if (ad_banner !== undefined) {
       updateFields.push('ad_banner = ?');
       updateValues.push(ad_banner);
@@ -946,6 +963,20 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
     if (font_select !== undefined) {
       updateFields.push('font_select = ?');
       updateValues.push(font_select);
+    }
+    
+    // Bank account fields
+    if (bank_account_name !== undefined) {
+      updateFields.push('bank_account_name = ?');
+      updateValues.push(bank_account_name);
+    }
+    if (bank_account_number !== undefined) {
+      updateFields.push('bank_account_number = ?');
+      updateValues.push(bank_account_number);
+    }
+    if (bank_account_name_thai !== undefined) {
+      updateFields.push('bank_account_name_thai = ?');
+      updateValues.push(bank_account_name_thai);
     }
     
     // PromptPay configuration fields
@@ -1004,7 +1035,9 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, font_select, promptpay_number, promptpay_name, 
+       footer_logo, theme, ad_banner, font_select, 
+       bank_account_name, bank_account_number, bank_account_name_thai,
+       promptpay_number, promptpay_name, 
        line_cookie, line_mac, verify_token, last_check, auto_verify_enabled,
        created_at, updated_at 
        FROM config WHERE customer_id = ?`,
@@ -1042,8 +1075,13 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
         footer_image: updatedConfig.footer_image,
         load_logo: updatedConfig.load_logo,
         footer_logo: updatedConfig.footer_logo,
+        theme: updatedConfig.theme,
         ad_banner: updatedConfig.ad_banner,
         font_select: updatedConfig.font_select,
+        // Bank account fields
+        bank_account_name: updatedConfig.bank_account_name,
+        bank_account_number: updatedConfig.bank_account_number,
+        bank_account_name_thai: updatedConfig.bank_account_name_thai,
         // PromptPay configuration fields
         promptpay_number: updatedConfig.promptpay_number,
         promptpay_name: updatedConfig.promptpay_name,
@@ -6935,6 +6973,260 @@ setInterval(async () => {
     console.error('Error in auto verification system:', error);
   }
 }, 30000); // Run every 30 seconds
+
+app.post('/api/slip', authenticateToken, async (req, res) => {
+  try {
+    const { img } = req.body;
+
+    if (!img) {
+      return res.status(400).json({
+        success: false,
+        message: 'Image data is required'
+      });
+    }
+
+    // Debug: Log image data info
+    console.log('Image data length:', img.length);
+    console.log('Image data starts with:', img.substring(0, 50));
+    
+    // Validate and clean image data
+    let cleanImg = img;
+    
+    // Remove data URL prefix if present
+    if (img.startsWith('data:image/')) {
+      const base64Index = img.indexOf(',');
+      if (base64Index !== -1) {
+        cleanImg = img.substring(base64Index + 1);
+        console.log('Removed data URL prefix, new length:', cleanImg.length);
+      }
+    }
+    
+    // Validate base64 format
+    const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
+    if (!base64Regex.test(cleanImg)) {
+      console.log('Invalid base64 format');
+      return res.status(400).json({
+        success: false,
+        message: 'รูปแบบข้อมูลรูปภาพไม่ถูกต้อง'
+      });
+    }
+
+    console.log('Sending to API with clean image data length:', cleanImg.length);
+
+    // Try different approaches for API call
+    let slipResponse;
+    
+    try {
+      // First try: Send as base64 string
+      slipResponse = await axios.post('https://slip-c.oiioioiiioooioio.download/api/slip', {
+        img: cleanImg
+      }, {
+        timeout: 30000,
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+    } catch (error) {
+      console.log('First attempt failed, trying with data URL format...');
+      
+      // Second try: Send with data URL format
+      slipResponse = await axios.post('https://slip-c.oiioioiiioooioio.download/api/slip', {
+        img: img
+      }, {
+        timeout: 30000,
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+    }
+
+    const slipData = slipResponse.data;
+    console.log('API Response:', JSON.stringify(slipData, null, 2));
+
+    // Check if API response is successful (different structure)
+    if (!slipData.data || slipData.message !== 'Slip processed successfully.') {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่สามารถประมวลผลสลิปได้',
+        error: slipData.error || slipData.message || 'Invalid slip data',
+        details: slipData
+      });
+    }
+
+    const { ref, amount, receiver_name, receiver_id } = slipData.data;
+    
+    console.log('Slip data extracted:', {
+      ref,
+      amount,
+      receiver_name,
+      receiver_id
+    });
+
+    // Check if transaction_ref already exists in topups
+    const [existingTopup] = await pool.execute(
+      'SELECT id FROM topups WHERE transaction_ref = ? AND customer_id = ?',
+      [ref, req.customer_id]
+    );
+
+    if (existingTopup.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'สลิปนี้ถูกใช้แล้ว',
+        transaction_ref: ref
+      });
+    }
+
+    // Get config to check receiver_name and bank_account_number
+    const [configs] = await pool.execute(
+      'SELECT bank_account_name, bank_account_number, bank_account_name_thai FROM config WHERE customer_id = ?',
+      [req.customer_id]
+    );
+
+    if (configs.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูลการตั้งค่าธนาคาร'
+      });
+    }
+
+    const config = configs[0];
+    
+    // Priority 1: Check bank account number first
+    const idMatch = config.bank_account_number && 
+      (receiver_id.includes(config.bank_account_number) ||
+       config.bank_account_number.includes(receiver_id));
+    
+    // Priority 2: Check English name if number doesn't match
+    const englishNameMatch = !idMatch && config.bank_account_name && 
+      (receiver_name.toLowerCase().includes(config.bank_account_name.toLowerCase()) ||
+       config.bank_account_name.toLowerCase().includes(receiver_name.toLowerCase()));
+    
+    // Priority 3: Check Thai name if number and English name don't match
+    const thaiNameMatch = !idMatch && !englishNameMatch && config.bank_account_name_thai && 
+      (receiver_name.toLowerCase().includes(config.bank_account_name_thai.toLowerCase()) ||
+       config.bank_account_name_thai.toLowerCase().includes(receiver_name.toLowerCase()));
+    
+    console.log('Validation checks:', {
+      config_number: config.bank_account_number,
+      slip_id: receiver_id,
+      id_match: idMatch,
+      config_english_name: config.bank_account_name,
+      slip_name: receiver_name,
+      english_name_match: englishNameMatch,
+      config_thai_name: config.bank_account_name_thai,
+      thai_name_match: thaiNameMatch
+    });
+    
+    // Check if any validation passes
+    if (!idMatch && !englishNameMatch && !thaiNameMatch) {
+      console.log('Validation failed - no match found');
+      return res.status(400).json({
+        success: false,
+        message: 'ข้อมูลผู้รับเงินไม่ตรงกับบัญชีธนาคารที่ตั้งค่าไว้',
+        expected: {
+          number: config.bank_account_number,
+          english_name: config.bank_account_name,
+          thai_name: config.bank_account_name_thai
+        },
+        received: {
+          name: receiver_name,
+          id: receiver_id
+        }
+      });
+    }
+    
+    console.log('Validation passed - proceeding with topup');
+
+    // Validate amount
+    if (!amount || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'จำนวนเงินไม่ถูกต้อง'
+      });
+    }
+
+    // Start transaction
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      console.log('Starting topup process:', {
+        customer_id: req.customer_id,
+        user_id: req.user.id,
+        amount: amount,
+        ref: ref
+      });
+      
+      // Insert into topups table
+      const [topupResult] = await connection.execute(
+        'INSERT INTO topups (customer_id, user_id, amount, method, transaction_ref, status) VALUES (?, ?, ?, ?, ?, ?)',
+        [req.customer_id, req.user.id, amount, 'bank_transfer', ref, 'success']
+      );
+      
+      console.log('Topup record inserted:', topupResult.insertId);
+
+      // Update user balance
+      const [updateResult] = await connection.execute(
+        'UPDATE users SET money = money + ? WHERE id = ? AND customer_id = ?',
+        [amount, req.user.id, req.customer_id]
+      );
+      
+      console.log('User balance update result:', updateResult.affectedRows);
+
+      if (updateResult.affectedRows === 0) {
+        throw new Error('ไม่สามารถอัปเดตเงินผู้ใช้ได้');
+      }
+
+      // Get new balance
+      const [userResult] = await connection.execute(
+        'SELECT money FROM users WHERE id = ? AND customer_id = ?',
+        [req.user.id, req.customer_id]
+      );
+
+      const newBalance = userResult[0].money;
+
+      await connection.commit();
+
+      console.log(`Slip topup successful: Customer ${req.customer_id}, User ${req.user.id}, Amount: ${amount}, Ref: ${ref}, New Balance: ${newBalance}`);
+
+      res.json({
+        success: true,
+        message: 'เติมเงินสำเร็จ',
+        data: {
+          amount: amount,
+          new_balance: newBalance,
+          topup_id: topupResult.insertId,
+          transaction_ref: ref,
+          slip_data: slipData.data
+        }
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+
+  } catch (error) {
+    console.error('Slip processing error:', error);
+    
+    if (error.response) {
+      // API error
+      return res.status(500).json({
+        success: false,
+        message: 'ไม่สามารถประมวลผลสลิปได้',
+        error: error.response.data?.message || 'API error'
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการประมวลผลสลิป',
+      error: error.message
+    });
+  }
+});
 
 // Graceful shutdown
 process.on('SIGINT', async () => {
