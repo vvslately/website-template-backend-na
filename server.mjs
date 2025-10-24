@@ -6423,11 +6423,254 @@ app.get('/stats', authenticateToken, requirePermission('can_edit_products'), asy
 
 
 
+// Health check page with API status
+app.get('/health', async (req, res) => {
+  const endpoints = [
+    { name: 'Home Page', path: '/', method: 'GET', public: true },
+    { name: 'Get Categories', path: '/categories', method: 'GET', public: true },
+    { name: 'Get Nested Categories', path: '/categories/nested', method: 'GET', public: true },
+    { name: 'Get Products', path: '/products', method: 'GET', public: true },
+    { name: 'Get Theme Settings', path: '/theme-settings', method: 'GET', public: true },
+    { name: 'Get Web Config', path: '/get-web-config', method: 'GET', public: true },
+    { name: 'Search Products', path: '/search?query=test', method: 'GET', public: true },
+    { name: 'Get All Reviews', path: '/reviews/all', method: 'GET', public: true },
+    { name: 'Get Expired Day', path: '/getexpiredday', method: 'GET', public: true },
+  ];
+
+  const html = `
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>API Health Check</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @keyframes pulse-slow {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .pulse-slow {
+      animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+    @keyframes spin-slow {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .spin-slow {
+      animation: spin-slow 3s linear infinite;
+    }
+  </style>
+</head>
+<body class="bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900 min-h-screen text-white">
+  <div class="container mx-auto px-4 py-8 max-w-6xl">
+    <!-- Header -->
+    <div class="text-center mb-8">
+      <div class="inline-flex items-center justify-center w-20 h-20 bg-gradient-to-br from-green-400 to-blue-500 rounded-full mb-4 spin-slow">
+        <svg class="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+        </svg>
+      </div>
+      <h1 class="text-5xl font-bold bg-gradient-to-r from-green-400 via-blue-500 to-purple-600 bg-clip-text text-transparent mb-2">
+        API Health Check
+      </h1>
+      <p class="text-gray-400 text-lg">ระบบตรวจสอบสถานะ API แบบเรียลไทม์</p>
+      <div class="mt-4">
+        <span class="px-4 py-2 bg-gray-800 rounded-full text-sm">
+          <span class="text-gray-400">Server Time:</span>
+          <span class="text-green-400 font-mono ml-2" id="server-time">${new Date().toLocaleString('th-TH')}</span>
+        </span>
+      </div>
+    </div>
+
+    <!-- Status Overview -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+      <div class="bg-gray-800/50 backdrop-blur-sm rounded-xl p-6 border border-gray-700 hover:border-green-500 transition-all duration-300">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-gray-400 text-sm mb-1">Total APIs</p>
+            <p class="text-3xl font-bold text-white" id="total-apis">${endpoints.length}</p>
+          </div>
+          <div class="w-12 h-12 bg-blue-500/20 rounded-lg flex items-center justify-center">
+            <svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-gray-800/50 backdrop-blur-sm rounded-xl p-6 border border-gray-700 hover:border-green-500 transition-all duration-300">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-gray-400 text-sm mb-1">Healthy</p>
+            <p class="text-3xl font-bold text-green-400" id="healthy-count">-</p>
+          </div>
+          <div class="w-12 h-12 bg-green-500/20 rounded-lg flex items-center justify-center">
+            <svg class="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-gray-800/50 backdrop-blur-sm rounded-xl p-6 border border-gray-700 hover:border-red-500 transition-all duration-300">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-gray-400 text-sm mb-1">Failed</p>
+            <p class="text-3xl font-bold text-red-400" id="failed-count">-</p>
+          </div>
+          <div class="w-12 h-12 bg-red-500/20 rounded-lg flex items-center justify-center">
+            <svg class="w-6 h-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- API Endpoints -->
+    <div class="bg-gray-800/50 backdrop-blur-sm rounded-xl border border-gray-700 overflow-hidden">
+      <div class="px-6 py-4 bg-gray-800/80 border-b border-gray-700">
+        <h2 class="text-2xl font-bold text-white flex items-center">
+          <svg class="w-6 h-6 mr-2 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+          </svg>
+          API Endpoints Status
+        </h2>
+      </div>
+      <div class="p-6">
+        <div class="space-y-4" id="endpoints-list">
+          ${endpoints.map((endpoint, index) => `
+          <div class="bg-gray-900/50 rounded-lg p-5 border border-gray-700 hover:border-purple-500 transition-all duration-300" data-endpoint="${index}">
+            <div class="flex items-center justify-between mb-3">
+              <div class="flex-1">
+                <div class="flex items-center space-x-3 mb-2">
+                  <span class="px-3 py-1 bg-blue-500/20 text-blue-400 rounded-md text-sm font-mono">${endpoint.method}</span>
+                  <h3 class="text-lg font-semibold text-white">${endpoint.name}</h3>
+                  ${endpoint.public ? '<span class="px-2 py-1 bg-green-500/20 text-green-400 rounded text-xs">Public</span>' : '<span class="px-2 py-1 bg-yellow-500/20 text-yellow-400 rounded text-xs">Auth Required</span>'}
+                </div>
+                <p class="text-gray-400 font-mono text-sm">${endpoint.path}</p>
+              </div>
+              <div class="flex items-center space-x-3">
+                <div class="status-indicator pulse-slow">
+                  <svg class="w-6 h-6 text-gray-500" fill="currentColor" viewBox="0 0 20 20">
+                    <circle cx="10" cy="10" r="8"></circle>
+                  </svg>
+                </div>
+                <span class="status-text text-gray-500 font-medium">Testing...</span>
+              </div>
+            </div>
+            <div class="status-details hidden mt-3 pt-3 border-t border-gray-700">
+              <div class="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <span class="text-gray-400">Status Code:</span>
+                  <span class="status-code ml-2 font-mono text-white">-</span>
+                </div>
+                <div>
+                  <span class="text-gray-400">Response Time:</span>
+                  <span class="response-time ml-2 font-mono text-white">-</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+
+    <!-- Refresh Button -->
+    <div class="text-center mt-8">
+      <button onclick="testAllEndpoints()" class="px-8 py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 rounded-lg font-semibold transition-all duration-300 transform hover:scale-105 shadow-lg">
+        <svg class="w-5 h-5 inline mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+        </svg>
+        Refresh Tests
+      </button>
+    </div>
+  </div>
+
+  <script>
+    const endpoints = ${JSON.stringify(endpoints)};
+    
+    async function testEndpoint(endpoint, index) {
+      const container = document.querySelector(\`[data-endpoint="\${index}"]\`);
+      const indicator = container.querySelector('.status-indicator svg');
+      const statusText = container.querySelector('.status-text');
+      const statusDetails = container.querySelector('.status-details');
+      const statusCode = container.querySelector('.status-code');
+      const responseTime = container.querySelector('.response-time');
+
+      try {
+        const startTime = Date.now();
+        const response = await fetch(endpoint.path);
+        const endTime = Date.now();
+        const responseTimeMs = endTime - startTime;
+
+        statusDetails.classList.remove('hidden');
+        statusCode.textContent = response.status;
+        responseTime.textContent = responseTimeMs + 'ms';
+
+        if (response.ok) {
+          indicator.classList.remove('text-gray-500', 'text-red-500', 'pulse-slow');
+          indicator.classList.add('text-green-500');
+          statusText.textContent = 'Healthy';
+          statusText.classList.remove('text-gray-500', 'text-red-500');
+          statusText.classList.add('text-green-500');
+          container.classList.remove('border-gray-700');
+          container.classList.add('border-green-500/50');
+          return true;
+        } else {
+          throw new Error('Not OK');
+        }
+      } catch (error) {
+        const indicator = container.querySelector('.status-indicator svg');
+        indicator.classList.remove('text-gray-500', 'text-green-500', 'pulse-slow');
+        indicator.classList.add('text-red-500');
+        statusText.textContent = 'Failed';
+        statusText.classList.remove('text-gray-500', 'text-green-500');
+        statusText.classList.add('text-red-500');
+        container.classList.remove('border-gray-700');
+        container.classList.add('border-red-500/50');
+        statusDetails.classList.remove('hidden');
+        statusCode.textContent = 'Error';
+        responseTime.textContent = '-';
+        return false;
+      }
+    }
+
+    async function testAllEndpoints() {
+      const results = await Promise.all(
+        endpoints.map((endpoint, index) => testEndpoint(endpoint, index))
+      );
+
+      const healthyCount = results.filter(r => r).length;
+      const failedCount = results.filter(r => !r).length;
+
+      document.getElementById('healthy-count').textContent = healthyCount;
+      document.getElementById('failed-count').textContent = failedCount;
+    }
+
+    // Run tests on page load
+    testAllEndpoints();
+
+    // Update time every second
+    setInterval(() => {
+      document.getElementById('server-time').textContent = new Date().toLocaleString('th-TH');
+    }, 1000);
+  </script>
+</body>
+</html>
+  `;
+
+  res.send(html);
+});
+
 
 // Start server
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
   console.log(`Test database connection at: http://localhost:${PORT}/test-db`);
+  console.log(`Health check available at: http://localhost:${PORT}/health`);
 });
 
 // ==================== PROMPTPAY PAYMENT SYSTEM ====================
@@ -7227,6 +7470,8 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
     });
   }
 });
+
+
 
 // Graceful shutdown
 process.on('SIGINT', async () => {
