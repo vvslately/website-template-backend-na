@@ -713,7 +713,7 @@ app.get('/get-web-config', async (req, res) => {
        footer_logo, theme, ad_banner, font_select, 
        bank_account_name, bank_account_number, bank_account_name_thai,
        promptpay_number, promptpay_name, 
-       line_cookie, line_mac, verify_token, last_check, auto_verify_enabled,
+       line_cookie, line_mac, verify_token, last_check, auto_verify_enabled, review, transac,
        created_at, updated_at 
        FROM config WHERE customer_id = ? ORDER BY id LIMIT 1`,
       [req.customer_id]
@@ -772,6 +772,8 @@ app.get('/get-web-config', async (req, res) => {
         verify_token: config.verify_token,
         last_check: config.last_check,
         auto_verify_enabled: config.auto_verify_enabled,
+        review: config.review,
+        transac: config.transac,
         created_at: config.created_at,
         updated_at: config.updated_at
       }
@@ -836,7 +838,9 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       line_cookie,
       line_mac,
       verify_token,
-      auto_verify_enabled
+      auto_verify_enabled,
+      review,
+      transac
     } = req.body;
 
     // Check if config exists for this customer
@@ -1004,6 +1008,14 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateFields.push('auto_verify_enabled = ?');
       updateValues.push(auto_verify_enabled ? 1 : 0);
     }
+    if (review !== undefined) {
+      updateFields.push('review = ?');
+      updateValues.push(review ? 1 : 0);
+    }
+    if (transac !== undefined) {
+      updateFields.push('transac = ?');
+      updateValues.push(transac ? 1 : 0);
+    }
 
     if (updateFields.length === 0) {
       return res.status(400).json({
@@ -1038,7 +1050,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
        footer_logo, theme, ad_banner, font_select, 
        bank_account_name, bank_account_number, bank_account_name_thai,
        promptpay_number, promptpay_name, 
-       line_cookie, line_mac, verify_token, last_check, auto_verify_enabled,
+       line_cookie, line_mac, verify_token, last_check, auto_verify_enabled, review, transac,
        created_at, updated_at 
        FROM config WHERE customer_id = ?`,
       [req.customer_id]
@@ -1090,6 +1102,8 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
         verify_token: updatedConfig.verify_token,
         last_check: updatedConfig.last_check,
         auto_verify_enabled: updatedConfig.auto_verify_enabled,
+        review: updatedConfig.review,
+        transac: updatedConfig.transac,
         created_at: updatedConfig.created_at,
         updated_at: updatedConfig.updated_at
       }
@@ -1921,6 +1935,19 @@ app.get('/reviews/all', async (req, res) => {
       });
     }
 
+    // Check if review feature is enabled
+    const [configRows] = await pool.execute(
+      'SELECT review FROM config WHERE customer_id = ?',
+      [customerId]
+    );
+
+    if (configRows.length === 0 || !configRows[0].review) {
+      return res.status(403).json({
+        success: false,
+        message: 'Review feature is disabled for this store'
+      });
+    }
+
     // Get all reviews with user information (no pagination, no query parameters)
     const [reviews] = await pool.execute(
       `SELECT 
@@ -1963,6 +1990,19 @@ app.post('/reviews', authenticateToken, async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Customer context required'
+      });
+    }
+
+    // Check if review feature is enabled
+    const [configRows] = await pool.execute(
+      'SELECT review FROM config WHERE customer_id = ?',
+      [customerId]
+    );
+
+    if (configRows.length === 0 || !configRows[0].review) {
+      return res.status(403).json({
+        success: false,
+        message: 'Review feature is disabled for this store'
       });
     }
 
@@ -2030,6 +2070,19 @@ app.put('/reviews/:id', authenticateToken, async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Customer context required'
+      });
+    }
+
+    // Check if review feature is enabled
+    const [configRows] = await pool.execute(
+      'SELECT review FROM config WHERE customer_id = ?',
+      [customerId]
+    );
+
+    if (configRows.length === 0 || !configRows[0].review) {
+      return res.status(403).json({
+        success: false,
+        message: 'Review feature is disabled for this store'
       });
     }
 
@@ -2105,6 +2158,19 @@ app.delete('/reviews/:id', authenticateToken, async (req, res) => {
       });
     }
 
+    // Check if review feature is enabled
+    const [configRows] = await pool.execute(
+      'SELECT review FROM config WHERE customer_id = ?',
+      [customerId]
+    );
+
+    if (configRows.length === 0 || !configRows[0].review) {
+      return res.status(403).json({
+        success: false,
+        message: 'Review feature is disabled for this store'
+      });
+    }
+
     // Validate review ID
     if (!reviewId || isNaN(reviewId)) {
       return res.status(400).json({
@@ -2139,6 +2205,117 @@ app.delete('/reviews/:id', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('Delete review error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+app.get('/store/last-transactions', async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+    const limit = parseInt(req.query.limit) || 10; // Default 10 transactions
+
+    // Validate customer ID
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer ID not found. Please check your subdomain or website configuration.'
+      });
+    }
+
+    // Check if transaction display feature is enabled
+    const [configRows] = await pool.execute(
+      'SELECT transac FROM config WHERE customer_id = ?',
+      [customerId]
+    );
+
+    if (configRows.length === 0 || !configRows[0].transac) {
+      return res.status(403).json({
+        success: false,
+        message: 'Transaction display feature is disabled for this store'
+      });
+    }
+
+    // Validate limit
+    if (isNaN(limit) || limit < 1 || limit > 100) {
+      return res.status(400).json({
+        success: false,
+        message: 'Limit must be between 1 and 100'
+      });
+    }
+
+    // Calculate max rows (already validated as number)
+    const maxRows = limit * 20;
+
+    // Get store's recent transactions with transaction items and user info
+    const [transactions] = await pool.execute(
+      `SELECT 
+        t.id, 
+        t.bill_number, 
+        t.total_price, 
+        t.created_at,
+        u.fullname as user_name,
+        u.email as user_email,
+        ti.id as item_id, 
+        ti.product_id, 
+        ti.quantity, 
+        ti.price as item_price,
+        p.title as product_title, 
+        p.image as product_image
+      FROM transactions t
+      LEFT JOIN users u ON t.user_id = u.id
+      LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
+      LEFT JOIN products p ON ti.product_id = p.id
+      WHERE t.customer_id = ?
+      ORDER BY t.created_at DESC, ti.id ASC
+      LIMIT ${maxRows}`,
+      [customerId]  // ส่งแค่ customer_id parameter เดียว
+    );
+
+    // Group transactions and their items
+    const transactionMap = new Map();
+    
+    transactions.forEach(row => {
+      if (!transactionMap.has(row.id)) {
+        transactionMap.set(row.id, {
+          id: row.id,
+          bill_number: row.bill_number,
+          total_price: row.total_price,
+          created_at: row.created_at,
+          user_name: row.user_name,
+          user_email: row.user_email,
+          items: []
+        });
+      }
+      
+      if (row.item_id) {
+        transactionMap.get(row.id).items.push({
+          id: row.item_id,
+          product_id: row.product_id,
+          product_title: row.product_title,
+          product_image: row.product_image,
+          quantity: row.quantity,
+          price: row.item_price
+        });
+      }
+    });
+
+    // Convert map to array and limit to requested number
+    const storeTransactions = Array.from(transactionMap.values()).slice(0, limit);
+
+    res.json({
+      success: true,
+      message: 'Store transactions retrieved successfully',
+      data: storeTransactions,
+      total: storeTransactions.length,
+      customer_id: customerId
+    });
+
+  } catch (error) {
+    console.error('Store last transactions error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -6434,6 +6611,7 @@ app.get('/health', async (req, res) => {
     { name: 'Get Web Config', path: '/get-web-config', method: 'GET', public: true },
     { name: 'Search Products', path: '/search?query=test', method: 'GET', public: true },
     { name: 'Get All Reviews', path: '/reviews/all', method: 'GET', public: true },
+    { name: 'Get Store Last Transactions', path: '/store/last-transactions?limit=10', method: 'GET', public: true },
     { name: 'Get Expired Day', path: '/getexpiredday', method: 'GET', public: true },
   ];
 
