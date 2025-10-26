@@ -9188,6 +9188,472 @@ app.delete('/api/admin/contacts/:id', authenticateToken, requirePermission('can_
   }
 });
 
+// ==================== TOPUP ENDPOINTS ====================
+
+// Get user's topup history
+app.get('/api/topups', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const customerId = req.customer_id;
+
+    const [topups] = await pool.execute(
+      `SELECT 
+        id,
+        amount,
+        method,
+        transaction_ref,
+        status,
+        created_at,
+        updated_at
+      FROM topups
+      WHERE user_id = ? AND customer_id = ?
+      ORDER BY created_at DESC`,
+      [userId, customerId]
+    );
+
+    res.json({
+      success: true,
+      message: 'ดึงประวัติการเติมเงินสำเร็จ',
+      data: topups,
+      total: topups.length
+    });
+
+  } catch (error) {
+    console.error('Error fetching topups:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงข้อมูล',
+      error: error.message
+    });
+  }
+});
+
+// Get single topup details
+app.get('/api/topups/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const customerId = req.customer_id;
+
+    const [topups] = await pool.execute(
+      `SELECT 
+        t.*,
+        u.fullname,
+        u.email
+      FROM topups t
+      LEFT JOIN users u ON t.user_id = u.id
+      WHERE t.id = ? AND t.user_id = ? AND t.customer_id = ?`,
+      [id, userId, customerId]
+    );
+
+    if (topups.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบรายการเติมเงินที่ระบุ'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'ดึงข้อมูลรายการเติมเงินสำเร็จ',
+      data: topups[0]
+    });
+
+  } catch (error) {
+    console.error('Error fetching topup:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงข้อมูล',
+      error: error.message
+    });
+  }
+});
+
+// Create new topup request
+app.post('/api/topups', authenticateToken, async (req, res) => {
+  try {
+    const { amount, method, transaction_ref } = req.body;
+    const userId = req.user.id;
+    const customerId = req.customer_id;
+
+    // Validate required fields
+    if (!amount || !method) {
+      return res.status(400).json({
+        success: false,
+        message: 'กรุณาระบุจำนวนเงินและวิธีการชำระเงิน'
+      });
+    }
+
+    // Validate amount
+    if (parseFloat(amount) <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'จำนวนเงินต้องมากกว่า 0'
+      });
+    }
+
+    // Validate method
+    const validMethods = ['bank_transfer', 'promptpay', 'truewallet', 'credit_card'];
+    if (!validMethods.includes(method)) {
+      return res.status(400).json({
+        success: false,
+        message: 'วิธีการชำระเงินไม่ถูกต้อง'
+      });
+    }
+
+    // Insert topup request
+    const [result] = await pool.execute(
+      `INSERT INTO topups (customer_id, user_id, amount, method, transaction_ref, status)
+       VALUES (?, ?, ?, ?, ?, 'pending')`,
+      [customerId, userId, amount, method, transaction_ref || null]
+    );
+
+    // Get the created topup
+    const [topups] = await pool.execute(
+      'SELECT * FROM topups WHERE id = ?',
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'สร้างคำขอเติมเงินสำเร็จ',
+      data: topups[0]
+    });
+
+  } catch (error) {
+    console.error('Error creating topup:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการสร้างคำขอเติมเงิน',
+      error: error.message
+    });
+  }
+});
+
+// ==================== ADMIN TOPUP ENDPOINTS ====================
+
+// Get all topups (Admin only)
+app.get('/api/admin/topups', authenticateToken, requirePermission('can_view_reports'), async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+    const { status, method, limit = 100, offset = 0 } = req.query;
+
+    let query = `
+      SELECT 
+        t.*,
+        u.fullname,
+        u.email
+      FROM topups t
+      LEFT JOIN users u ON t.user_id = u.id
+      WHERE t.customer_id = ?
+    `;
+    const queryParams = [customerId];
+
+    // Filter by status
+    if (status && ['pending', 'success', 'failed'].includes(status)) {
+      query += ' AND t.status = ?';
+      queryParams.push(status);
+    }
+
+    // Filter by method
+    if (method) {
+      query += ' AND t.method = ?';
+      queryParams.push(method);
+    }
+
+    query += ' ORDER BY t.created_at DESC LIMIT ? OFFSET ?';
+    queryParams.push(parseInt(limit), parseInt(offset));
+
+    const [topups] = await pool.execute(query, queryParams);
+
+    // Get total count
+    let countQuery = 'SELECT COUNT(*) as total FROM topups WHERE customer_id = ?';
+    const countParams = [customerId];
+
+    if (status && ['pending', 'success', 'failed'].includes(status)) {
+      countQuery += ' AND status = ?';
+      countParams.push(status);
+    }
+
+    if (method) {
+      countQuery += ' AND method = ?';
+      countParams.push(method);
+    }
+
+    const [countResult] = await pool.execute(countQuery, countParams);
+
+    res.json({
+      success: true,
+      message: 'ดึงข้อมูลการเติมเงินทั้งหมดสำเร็จ',
+      data: topups,
+      pagination: {
+        total: countResult[0].total,
+        limit: parseInt(limit),
+        offset: parseInt(offset)
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching all topups:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงข้อมูล',
+      error: error.message
+    });
+  }
+});
+
+// Get single topup details (Admin only)
+app.get('/api/admin/topups/:id', authenticateToken, requirePermission('can_view_reports'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const customerId = req.customer_id;
+
+    const [topups] = await pool.execute(
+      `SELECT 
+        t.*,
+        u.fullname,
+        u.email,
+        u.money as user_balance
+      FROM topups t
+      LEFT JOIN users u ON t.user_id = u.id
+      WHERE t.id = ? AND t.customer_id = ?`,
+      [id, customerId]
+    );
+
+    if (topups.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบรายการเติมเงินที่ระบุ'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'ดึงข้อมูลรายการเติมเงินสำเร็จ',
+      data: topups[0]
+    });
+
+  } catch (error) {
+    console.error('Error fetching topup:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงข้อมูล',
+      error: error.message
+    });
+  }
+});
+
+// Update topup status (Admin only)
+app.put('/api/admin/topups/:id', authenticateToken, requirePermission('can_edit_orders'), async (req, res) => {
+  const connection = await pool.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+
+    const { id } = req.params;
+    const { status, transaction_ref } = req.body;
+    const customerId = req.customer_id;
+
+    // Validate status
+    if (!status || !['pending', 'success', 'failed'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'สถานะไม่ถูกต้อง'
+      });
+    }
+
+    // Get current topup details
+    const [topups] = await connection.execute(
+      'SELECT * FROM topups WHERE id = ? AND customer_id = ?',
+      [id, customerId]
+    );
+
+    if (topups.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบรายการเติมเงินที่ระบุ'
+      });
+    }
+
+    const topup = topups[0];
+    const oldStatus = topup.status;
+
+    // Update topup status
+    const updateFields = ['status = ?'];
+    const updateValues = [status];
+
+    if (transaction_ref !== undefined) {
+      updateFields.push('transaction_ref = ?');
+      updateValues.push(transaction_ref);
+    }
+
+    updateValues.push(id, customerId);
+
+    await connection.execute(
+      `UPDATE topups SET ${updateFields.join(', ')}, updated_at = NOW() WHERE id = ? AND customer_id = ?`,
+      updateValues
+    );
+
+    // If status changed from pending to success, update user's money
+    if (oldStatus !== 'success' && status === 'success') {
+      await connection.execute(
+        'UPDATE users SET money = money + ? WHERE id = ?',
+        [topup.amount, topup.user_id]
+      );
+    }
+
+    // If status changed from success to failed/pending, deduct money
+    if (oldStatus === 'success' && status !== 'success') {
+      await connection.execute(
+        'UPDATE users SET money = money - ? WHERE id = ?',
+        [topup.amount, topup.user_id]
+      );
+    }
+
+    await connection.commit();
+
+    // Get updated topup
+    const [updatedTopups] = await connection.execute(
+      `SELECT 
+        t.*,
+        u.fullname,
+        u.email,
+        u.money as user_balance
+      FROM topups t
+      LEFT JOIN users u ON t.user_id = u.id
+      WHERE t.id = ?`,
+      [id]
+    );
+
+    res.json({
+      success: true,
+      message: 'อัปเดตสถานะการเติมเงินสำเร็จ',
+      data: updatedTopups[0]
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('Error updating topup:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการอัปเดต',
+      error: error.message
+    });
+  } finally {
+    connection.release();
+  }
+});
+
+// Delete topup (Admin only)
+app.delete('/api/admin/topups/:id', authenticateToken, requirePermission('can_edit_orders'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const customerId = req.customer_id;
+
+    // Check if topup exists
+    const [topups] = await pool.execute(
+      'SELECT * FROM topups WHERE id = ? AND customer_id = ?',
+      [id, customerId]
+    );
+
+    if (topups.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบรายการเติมเงินที่ระบุ'
+      });
+    }
+
+    const topup = topups[0];
+
+    // Prevent deletion of successful topups
+    if (topup.status === 'success') {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่สามารถลบรายการเติมเงินที่สำเร็จแล้ว'
+      });
+    }
+
+    // Delete topup
+    await pool.execute(
+      'DELETE FROM topups WHERE id = ? AND customer_id = ?',
+      [id, customerId]
+    );
+
+    res.json({
+      success: true,
+      message: 'ลบรายการเติมเงินสำเร็จ'
+    });
+
+  } catch (error) {
+    console.error('Error deleting topup:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการลบ',
+      error: error.message
+    });
+  }
+});
+
+// Get topup statistics (Admin only)
+app.get('/api/admin/topups/stats/summary', authenticateToken, requirePermission('can_view_reports'), async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+    const { start_date, end_date } = req.query;
+
+    let dateCondition = '';
+    const queryParams = [customerId];
+
+    if (start_date && end_date) {
+      dateCondition = 'AND created_at BETWEEN ? AND ?';
+      queryParams.push(start_date, end_date);
+    }
+
+    // Get overall statistics
+    const [stats] = await pool.execute(
+      `SELECT 
+        COUNT(*) as total_topups,
+        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_count,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_count,
+        SUM(CASE WHEN status = 'success' THEN amount ELSE 0 END) as total_amount,
+        AVG(CASE WHEN status = 'success' THEN amount ELSE NULL END) as avg_amount
+      FROM topups
+      WHERE customer_id = ? ${dateCondition}`,
+      queryParams
+    );
+
+    // Get by method
+    const [methodStats] = await pool.execute(
+      `SELECT 
+        method,
+        COUNT(*) as count,
+        SUM(CASE WHEN status = 'success' THEN amount ELSE 0 END) as total_amount
+      FROM topups
+      WHERE customer_id = ? ${dateCondition}
+      GROUP BY method`,
+      queryParams
+    );
+
+    res.json({
+      success: true,
+      message: 'ดึงสถิติการเติมเงินสำเร็จ',
+      data: {
+        overall: stats[0],
+        by_method: methodStats
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching topup stats:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงสถิติ',
+      error: error.message
+    });
+  }
+});
+
 
 
 // Graceful shutdown
