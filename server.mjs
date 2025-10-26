@@ -20,7 +20,7 @@ const JWT_SECRET = '32670cc39ca9333bedb30406cc22c4bc';
 const dbConfig = {
   host: '210.246.215.19',
   port: 3306,
-  user: 'vhouseuser', 
+  user: 'vhouseuser',
   password: 'StrongPass123!',
   database: 'vhousespace',
   ssl: {
@@ -35,9 +35,9 @@ const pool = mysql.createPool(dbConfig);
 app.use(cors({
   origin: (origin, callback) => {
     // อนุญาต localhost สำหรับ dev
-    if (!origin || 
-        origin.startsWith('http://localhost') || 
-        origin.startsWith('https://localhost')) {
+    if (!origin ||
+      origin.startsWith('http://localhost') ||
+      origin.startsWith('https://localhost')) {
       return callback(null, true);
     }
 
@@ -60,7 +60,7 @@ const multiTenantMiddleware = async (req, res, next) => {
   try {
     // Get host from request
     const host = req.get('host') || req.get('x-forwarded-host') || '';
-    
+
     // Check if it's localhost first - auto use 'death'
     // This includes requests FROM localhost frontend TO external API
     const origin = req.get('origin') || '';
@@ -69,7 +69,7 @@ const multiTenantMiddleware = async (req, res, next) => {
         'SELECT customer_id, website_name FROM auth_sites WHERE website_name = ?',
         ['death']
       );
-      
+
       if (sites.length > 0) {
         const site = sites[0];
         req.customer_id = parseInt(site.customer_id);
@@ -80,9 +80,9 @@ const multiTenantMiddleware = async (req, res, next) => {
       }
       return next();
     }
-    
+
     let subdomain = req.get('x-subdomain') || req.get('x-website-name');
-    
+
     // If no custom header, try to extract from origin header
     if (!subdomain) {
       const origin = req.get('origin') || '';
@@ -94,19 +94,19 @@ const multiTenantMiddleware = async (req, res, next) => {
         }
       }
     }
-    
+
     // If still no subdomain, try to extract from host (for direct API calls)
     if (!subdomain) {
       subdomain = host.split('.')[0];
     }
-    
+
     // Skip multi-tenant for main domain
     if (host === 'vhouse.online' || !subdomain || subdomain === 'www') {
       req.customer_id = null;
       req.website_name = null;
       return next();
     }
-    
+
     // Debug logging for production troubleshooting
     console.log('Multi-tenant Debug:', {
       host,
@@ -118,13 +118,13 @@ const multiTenantMiddleware = async (req, res, next) => {
       isLocalhostHost: host.includes('localhost'),
       isLocalhostOrigin: origin.includes('localhost')
     });
-    
+
     // Find customer_id from auth_sites table using website_name
     const [sites] = await pool.execute(
       'SELECT customer_id, website_name FROM auth_sites WHERE website_name = ?',
       [subdomain]
     );
-    
+
     if (sites.length === 0) {
       return res.status(404).json({
         success: false,
@@ -138,11 +138,11 @@ const multiTenantMiddleware = async (req, res, next) => {
         }
       });
     }
-    
+
     const site = sites[0];
     req.customer_id = parseInt(site.customer_id);
     req.website_name = site.website_name;
-    
+
     next();
   } catch (error) {
     console.error('Multi-tenant middleware error:', error);
@@ -165,17 +165,17 @@ const authenticateToken = (req, res, next) => {
   const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
 
   if (!token) {
-    return res.status(401).json({ 
-      success: false, 
-      message: 'Access token required' 
+    return res.status(401).json({
+      success: false,
+      message: 'Access token required'
     });
   }
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'Invalid or expired token' 
+      return res.status(403).json({
+        success: false,
+        message: 'Invalid or expired token'
       });
     }
     req.user = user;
@@ -343,8 +343,8 @@ app.post('/signup', async (req, res) => {
 
     // Generate JWT token
     const token = jwt.sign(
-      { 
-        id: result.insertId, 
+      {
+        id: result.insertId,
         email: email,
         fullname: fullname,
         customer_id: req.customer_id
@@ -422,8 +422,8 @@ app.post('/login', async (req, res) => {
 
     // Generate JWT token
     const token = jwt.sign(
-      { 
-        id: user.id, 
+      {
+        id: user.id,
         email: user.email,
         fullname: user.fullname,
         customer_id: req.customer_id
@@ -697,7 +697,6 @@ app.put('/update-theme-settings', authenticateToken, requirePermission('can_mana
   }
 });
 
-// Get web config endpoint
 app.get('/get-web-config', async (req, res) => {
   try {
     // Check if customer_id is available
@@ -718,7 +717,7 @@ app.get('/get-web-config', async (req, res) => {
        footer_logo, theme, ad_banner, font_select, 
        bank_account_name, bank_account_number, bank_account_name_thai, bank_name,
        promptpay_number, promptpay_name, 
-       line_cookie, line_mac, verify_token, last_check, auto_verify_enabled, review, transac,
+       line_cookie, line_mac, verify_token, last_check, auto_verify_enabled, review, transac, annouce_status,
        created_at, updated_at 
        FROM config WHERE customer_id = ? ORDER BY id LIMIT 1`,
       [req.customer_id]
@@ -780,6 +779,7 @@ app.get('/get-web-config', async (req, res) => {
         auto_verify_enabled: config.auto_verify_enabled,
         review: config.review,
         transac: config.transac,
+        annouce_status: config.annouce_status,
         created_at: config.created_at,
         updated_at: config.updated_at
       }
@@ -846,7 +846,8 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       verify_token,
       auto_verify_enabled,
       review,
-      transac
+      transac,
+      annouce_status  // ✅ เพิ่มบรรทัดนี้
     } = req.body;
 
     // Check if config exists for this customer
@@ -974,7 +975,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateFields.push('font_select = ?');
       updateValues.push(font_select);
     }
-    
+
     // Bank account fields
     if (bank_account_name !== undefined) {
       updateFields.push('bank_account_name = ?');
@@ -988,7 +989,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateFields.push('bank_account_name_thai = ?');
       updateValues.push(bank_account_name_thai);
     }
-    
+
     // PromptPay configuration fields
     if (promptpay_number !== undefined) {
       updateFields.push('promptpay_number = ?');
@@ -1022,6 +1023,11 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateFields.push('transac = ?');
       updateValues.push(transac ? 1 : 0);
     }
+    // ✅ เพิ่มส่วนนี้
+    if (annouce_status !== undefined) {
+      updateFields.push('annouce_status = ?');
+      updateValues.push(annouce_status ? 1 : 0);
+    }
 
     if (updateFields.length === 0) {
       return res.status(400).json({
@@ -1046,7 +1052,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       });
     }
 
-    // Get updated config
+    // Get updated config (✅ เพิ่ม annouce_status ใน SELECT)
     const [updatedConfigs] = await pool.execute(
       `SELECT id, owner_phone, site_name, site_logo, meta_title, meta_description, 
        meta_keywords, meta_author, discord_link, discord_webhook, banner_link, 
@@ -1056,7 +1062,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
        footer_logo, theme, ad_banner, font_select, 
        bank_account_name, bank_account_number, bank_account_name_thai,
        promptpay_number, promptpay_name, 
-       line_cookie, line_mac, verify_token, last_check, auto_verify_enabled, review, transac,
+       line_cookie, line_mac, verify_token, last_check, auto_verify_enabled, review, transac, annouce_status,
        created_at, updated_at 
        FROM config WHERE customer_id = ?`,
       [req.customer_id]
@@ -1110,6 +1116,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
         auto_verify_enabled: updatedConfig.auto_verify_enabled,
         review: updatedConfig.review,
         transac: updatedConfig.transac,
+        annouce_status: updatedConfig.annouce_status,  // ✅ เพิ่มบรรทัดนี้
         created_at: updatedConfig.created_at,
         updated_at: updatedConfig.updated_at
       }
@@ -1124,6 +1131,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
     });
   }
 });
+
 
 // Get categories endpoint (hierarchical structure)
 app.get('/categories', async (req, res) => {
@@ -1157,7 +1165,7 @@ app.get('/categories', async (req, res) => {
     // Second pass: build hierarchy
     categories.forEach(category => {
       const categoryObj = categoryMap.get(category.id);
-      
+
       if (category.parent_id === null) {
         // Root category
         rootCategories.push(categoryObj);
@@ -1237,7 +1245,7 @@ app.get('/categories/nested', async (req, res) => {
       'SELECT id, parent_id, title, subtitle, image, category, featured, isActive, priority, created_at FROM categories WHERE customer_id = ? AND isActive = 1 ORDER BY priority DESC, title ASC',
       [req.customer_id]
     );
-    
+
     // Build hierarchical structure
     const categoryMap = new Map();
     const rootCategories = [];
@@ -1253,7 +1261,7 @@ app.get('/categories/nested', async (req, res) => {
     // Second pass: build hierarchy
     categories.forEach(category => {
       const categoryObj = categoryMap.get(category.id);
-      
+
       if (category.parent_id === null) {
         // Root category
         rootCategories.push(categoryObj);
@@ -1334,7 +1342,7 @@ app.get('/categories/:categoryId/products', async (req, res) => {
       const originalPrice = parseFloat(product.price);
       const discountPercent = parseInt(product.discount_percent) || 0;
       const discountedPrice = originalPrice * (1 - discountPercent / 100);
-      
+
       return {
         ...product,
         original_price: originalPrice,
@@ -1457,10 +1465,10 @@ app.get('/products/:productId', async (req, res) => {
 // Purchase product endpoint
 app.post('/purchase', authenticateToken, async (req, res) => {
   const connection = await pool.getConnection();
-  
+
   try {
     await connection.beginTransaction();
-    
+
     const { product_id, quantity = 1 } = req.body;
     const userId = req.user.id;
 
@@ -1522,7 +1530,7 @@ app.post('/purchase', authenticateToken, async (req, res) => {
     }
 
     const user = users[0];
-    
+
     // Calculate discounted price
     const originalPrice = parseFloat(product.price);
     const discountPercent = parseInt(product.discount_percent) || 0;
@@ -1555,7 +1563,7 @@ app.post('/purchase', authenticateToken, async (req, res) => {
     const transactionItems = [];
     for (let i = 0; i < quantity; i++) {
       const stockItem = availableStock[i];
-      
+
       // Create transaction item
       const [itemResult] = await connection.execute(
         'INSERT INTO transaction_items (customer_id, bill_number, transaction_id, product_id, quantity, price, license_id) VALUES (?, ?, ?, ?, 1, ?, ?)',
@@ -1585,7 +1593,7 @@ app.post('/purchase', authenticateToken, async (req, res) => {
       'SELECT COUNT(*) as available_stock FROM product_stock WHERE product_id = ? AND sold = 0',
       [product_id]
     );
-    
+
     await connection.execute(
       'UPDATE products SET stock = ? WHERE id = ?',
       [stockCount[0].available_stock, product_id]
@@ -1786,7 +1794,7 @@ app.get('/products', async (req, res) => {
       const originalPrice = parseFloat(product.price);
       const discountPercent = parseInt(product.discount_percent) || 0;
       const discountedPrice = originalPrice * (1 - discountPercent / 100);
-      
+
       return {
         ...product,
         original_price: originalPrice,
@@ -1896,7 +1904,7 @@ app.get('/search', async (req, res) => {
       const originalPrice = parseFloat(product.price);
       const discountPercent = parseInt(product.discount_percent) || 0;
       const discountedPrice = originalPrice * (1 - discountPercent / 100);
-      
+
       return {
         ...product,
         original_price: originalPrice,
@@ -2283,7 +2291,7 @@ app.get('/store/last-transactions', async (req, res) => {
 
     // Group transactions and their items
     const transactionMap = new Map();
-    
+
     transactions.forEach(row => {
       if (!transactionMap.has(row.id)) {
         transactionMap.set(row.id, {
@@ -2296,7 +2304,7 @@ app.get('/store/last-transactions', async (req, res) => {
           items: []
         });
       }
-      
+
       if (row.item_id) {
         transactionMap.get(row.id).items.push({
           id: row.item_id,
@@ -2353,7 +2361,7 @@ app.get('/my-transactions', authenticateToken, async (req, res) => {
 
     // Group transactions and their items
     const transactionMap = new Map();
-    
+
     transactions.forEach(row => {
       if (!transactionMap.has(row.id)) {
         transactionMap.set(row.id, {
@@ -2364,7 +2372,7 @@ app.get('/my-transactions', authenticateToken, async (req, res) => {
           items: []
         });
       }
-      
+
       if (row.item_id) {
         transactionMap.get(row.id).items.push({
           id: row.item_id,
@@ -2631,7 +2639,7 @@ app.get('/get-stats', async (req, res) => {
     // Check database connection status
     let dbStatus = '24/7';
     let dbMessage = 'Database is running normally';
-    
+
     try {
       // Test database connection
       await pool.execute('SELECT 1');
@@ -2769,7 +2777,7 @@ app.get('/check-customer-status', async (req, res) => {
     const site = sites[0];
     const expiredDay = new Date(site.expiredDay);
     const currentDate = new Date();
-    
+
     // Reset time to compare only dates
     currentDate.setHours(0, 0, 0, 0);
     expiredDay.setHours(0, 0, 0, 0);
@@ -2832,7 +2840,7 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
       'SELECT owner_phone FROM config WHERE customer_id = ? ORDER BY id ASC LIMIT 1',
       [req.customer_id]
     );
-    
+
     if (!configRows.length) {
       return res.status(400).json({ success: false, error: 'ไม่พบเบอร์โทรในตาราง config' });
     }
@@ -2844,7 +2852,7 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
       "SELECT id, money FROM users WHERE id = ? AND customer_id = ?",
       [req.user.id, req.customer_id]
     );
-    
+
     if (user.length === 0) {
       return res.status(404).json({ success: false, error: 'ไม่พบผู้ใช้' });
     }
@@ -2870,11 +2878,11 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
     let data;
     let lastError;
     const maxRetries = 3;
-    
+
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         console.log(`Calling TrueMoney API (attempt ${attempt}/${maxRetries}): https://api.xpluem.com/${campaignId}/${phone}`);
-        
+
         const response = await axios.get(`https://api.xpluem.com/${campaignId}/${phone}`, {
           timeout: 15000, // เพิ่ม timeout เป็น 15 วินาที
           headers: {
@@ -2886,22 +2894,22 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
             return status < 500; // รับ status code น้อยกว่า 500
           }
         });
-        
+
         data = response.data;
         console.log(`TrueMoney API Response (attempt ${attempt}):`, data);
-        
+
         // ถ้าได้ response แล้วให้ break ออกจาก loop
         break;
-        
+
       } catch (error) {
         lastError = error;
         console.error(`TrueMoney API attempt ${attempt} failed:`, error.message);
-        
+
         // ถ้าเป็น attempt สุดท้ายให้ throw error
         if (attempt === maxRetries) {
           throw error;
         }
-        
+
         // รอ 2 วินาทีก่อนลองใหม่
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
@@ -2919,7 +2927,7 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
 
       const amount = data.data ? parseFloat(data.data.amount) : 0;
       const status = data.success ? 'success' : 'failed';
-      
+
       // ตรวจสอบจำนวนเงิน
       if (amount <= 0) {
         throw new Error('จำนวนเงินไม่ถูกต้อง');
@@ -2944,7 +2952,7 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
       // ถ้าสำเร็จ ให้บวกเงิน
       if (data.success && (data.message === 'รับเงินสำเร็จ' || data.message === 'success')) {
         const newMoney = parseFloat(user[0].money) + amount;
-        
+
         // อัปเดตเงินผู้ใช้
         const [updateResult] = await connection.execute(
           'UPDATE users SET money = ? WHERE id = ? AND customer_id = ?',
@@ -3095,8 +3103,8 @@ app.get('/admin/products', authenticateToken, requirePermission('can_edit_produc
       });
     }
 
-    const { 
-      includeInactive = false, 
+    const {
+      includeInactive = false,
       categoryId = null,
       page = 1,
       limit = 50,
@@ -3156,10 +3164,10 @@ app.get('/admin/products', authenticateToken, requirePermission('can_edit_produc
     // Add sorting
     const validSortFields = ['priority', 'title', 'price', 'stock', 'created_at', 'category_title'];
     const validSortOrders = ['asc', 'desc'];
-    
+
     const sortField = validSortFields.includes(sortBy) ? sortBy : 'priority';
     const sortDirection = validSortOrders.includes(sortOrder.toLowerCase()) ? sortOrder.toUpperCase() : 'DESC';
-    
+
     if (sortField === 'category_title') {
       query += ` ORDER BY c.title ${sortDirection}, p.title ASC`;
     } else {
@@ -3320,10 +3328,10 @@ app.get('/admin/products/:productId', authenticateToken, requirePermission('can_
 app.get('/admin/categories/:categoryId/products', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
   try {
     const { categoryId } = req.params;
-    const { 
-      includeInactive = false, 
+    const {
+      includeInactive = false,
       page = 1,
-      limit = 50 
+      limit = 50
     } = req.query;
 
     // Validate category ID
@@ -3464,10 +3472,10 @@ app.post('/admin/products', authenticateToken, requirePermission('can_edit_produ
         priority, discount_percent
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.customer_id, category_id, title, subtitle || null, price, 
-        reseller_price || null, stock || 0, duration || null, image || null, 
-        download_link || null, isSpecial || 0, featured || 0, isWarrenty || 0, 
-        warrenty_text || null, primary_color || null, secondary_color || null, 
+        req.customer_id, category_id, title, subtitle || null, price,
+        reseller_price || null, stock || 0, duration || null, image || null,
+        download_link || null, isSpecial || 0, featured || 0, isWarrenty || 0,
+        warrenty_text || null, primary_color || null, secondary_color || null,
         priority || 0, discount_percent || 0
       ]
     );
@@ -3699,7 +3707,7 @@ app.delete('/admin/products/:productId', authenticateToken, requirePermission('c
     if (force === 'true' || force === true) {
       // Force delete - remove all related data first
       await deleteProductWithRelatedData(productId, req.customer_id);
-      
+
       res.json({
         success: true,
         message: 'Product and all related data deleted successfully (force delete)',
@@ -3790,11 +3798,11 @@ async function deleteProductWithRelatedData(productId, customerId) {
 // Get all categories for admin (including inactive ones)
 app.get('/admin/categories', authenticateToken, requirePermission('can_edit_categories'), async (req, res) => {
   try {
-    const { 
-      includeInactive = false, 
+    const {
+      includeInactive = false,
       flat = false,
       page = 1,
-      limit = 50 
+      limit = 50
     } = req.query;
 
     // Build query based on includeInactive parameter
@@ -3805,11 +3813,11 @@ app.get('/admin/categories', authenticateToken, requirePermission('can_edit_cate
       FROM categories 
       WHERE customer_id = ?
     `;
-    
+
     if (!includeInactive || includeInactive === 'false') {
       query += ' AND isActive = 1';
     }
-    
+
     query += ' ORDER BY priority DESC, title ASC';
 
     // Add pagination if not flat structure
@@ -3830,7 +3838,7 @@ app.get('/admin/categories', authenticateToken, requirePermission('can_edit_cate
       if (!includeInactive || includeInactive === 'false') {
         countQuery += ' AND isActive = 1';
       }
-      
+
       const [countResult] = await pool.execute(countQuery, countParams);
       const total = countResult[0].total;
 
@@ -3860,7 +3868,7 @@ app.get('/admin/categories', authenticateToken, requirePermission('can_edit_cate
     // Second pass: build hierarchy
     categories.forEach(category => {
       const categoryObj = categoryMap.get(category.id);
-      
+
       if (category.parent_id === null) {
         // Root category
         rootCategories.push(categoryObj);
@@ -3928,7 +3936,7 @@ app.get('/admin/categories/:categoryId', authenticateToken, requirePermission('c
         'SELECT id, title FROM categories WHERE id = ? AND customer_id = ?',
         [category.parent_id, req.customer_id]
       );
-      
+
       if (parentCategory.length > 0) {
         category.parent_info = parentCategory[0];
       }
@@ -4024,7 +4032,7 @@ app.post('/admin/categories', authenticateToken, requirePermission('can_edit_cat
         featured, priority
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.customer_id, parent_id || null, title, subtitle || null, 
+        req.customer_id, parent_id || null, title, subtitle || null,
         image || null, category || null, featured || 0, priority || 0
       ]
     );
@@ -4228,7 +4236,7 @@ app.delete('/admin/categories/:categoryId', authenticateToken, requirePermission
     if (force === 'true' || force === true) {
       // Force delete - remove everything recursively
       await deleteCategoryRecursive(categoryId, req.customer_id);
-      
+
       res.json({
         success: true,
         message: 'Category and all related data deleted successfully (force delete)',
@@ -4488,7 +4496,7 @@ app.get('/admin/reports/overview', authenticateToken, requirePermission('can_edi
 // Get detailed sales report
 app.get('/admin/reports/sales', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
   try {
-    const { 
+    const {
       start_date = null,
       end_date = null,
       page = 1,
@@ -4502,12 +4510,12 @@ app.get('/admin/reports/sales', authenticateToken, requirePermission('can_edit_p
     // Build date filters
     let dateFilter = '';
     const queryParams = [req.customer_id];
-    
+
     if (start_date) {
       dateFilter += ' AND t.created_at >= ?';
       queryParams.push(new Date(start_date));
     }
-    
+
     if (end_date) {
       dateFilter += ' AND t.created_at <= ?';
       queryParams.push(new Date(end_date));
@@ -4576,7 +4584,7 @@ app.get('/admin/reports/sales', authenticateToken, requirePermission('can_edit_p
 // Get products performance report
 app.get('/admin/reports/products', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
   try {
-    const { 
+    const {
       category_id = null,
       sort_by = 'sales',
       period = '30'
@@ -4588,7 +4596,7 @@ app.get('/admin/reports/products', authenticateToken, requirePermission('can_edi
 
     let categoryFilter = '';
     const queryParams = [req.customer_id];
-    
+
     if (category_id) {
       categoryFilter = ' AND p.category_id = ?';
       queryParams.push(category_id);
@@ -4646,9 +4654,9 @@ app.get('/admin/reports/products', authenticateToken, requirePermission('can_edi
         GROUP BY product_id
       ) stock_info ON p.id = stock_info.product_id
       WHERE p.customer_id = ? ${categoryFilter}
-      ORDER BY ${sort_by === 'revenue' ? 'total_revenue' : 
-                 sort_by === 'stock' ? 'available_license_keys' : 
-                 'total_sales'} DESC
+      ORDER BY ${sort_by === 'revenue' ? 'total_revenue' :
+        sort_by === 'stock' ? 'available_license_keys' :
+          'total_sales'} DESC
     `, [req.customer_id, req.customer_id, startDate, req.customer_id, req.customer_id]);
 
     // Get categories summary
@@ -4696,7 +4704,7 @@ app.get('/admin/reports/products', authenticateToken, requirePermission('can_edi
 // Get users activity report
 app.get('/admin/reports/users', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
   try {
-    const { 
+    const {
       period = '30',
       page = 1,
       limit = 50
@@ -4802,7 +4810,7 @@ app.get('/admin/reports/users', authenticateToken, requirePermission('can_edit_p
 // Get topups report
 app.get('/admin/reports/topups', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
   try {
-    const { 
+    const {
       start_date = null,
       end_date = null,
       status = null,
@@ -4818,12 +4826,12 @@ app.get('/admin/reports/topups', authenticateToken, requirePermission('can_edit_
     // Build filters
     let filters = '';
     const queryParams = [req.customer_id, req.customer_id];
-    
+
     if (start_date) {
       filters += ' AND t.created_at >= ?';
       queryParams.push(new Date(start_date));
     }
-    
+
     if (end_date) {
       filters += ' AND t.created_at <= ?';
       queryParams.push(new Date(end_date));
@@ -4916,7 +4924,7 @@ app.get('/admin/reports/topups', authenticateToken, requirePermission('can_edit_
 // Get all product stock with pagination and filters
 app.get('/admin/stock', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
   try {
-    const { 
+    const {
       productId = null,
       soldStatus = null, // 'sold', 'unsold', or null for all
       page = 1,
@@ -4966,10 +4974,10 @@ app.get('/admin/stock', authenticateToken, requirePermission('can_edit_products'
     // Add sorting
     const validSortFields = ['created_at', 'license_key', 'product_title', 'sold'];
     const validSortOrders = ['asc', 'desc'];
-    
+
     const finalSortBy = validSortFields.includes(sortBy) ? sortBy : 'created_at';
     const finalSortOrder = validSortOrders.includes(sortOrder.toLowerCase()) ? sortOrder.toLowerCase() : 'desc';
-    
+
     if (finalSortBy === 'product_title') {
       query += ` ORDER BY p.title ${finalSortOrder}`;
     } else {
@@ -4991,7 +4999,7 @@ app.get('/admin/stock', authenticateToken, requirePermission('can_edit_products'
       LEFT JOIN categories c ON p.category_id = c.id
       WHERE 1=1
     `;
-    
+
     const countParams = [req.customer_id];
 
     if (productId && !isNaN(productId)) {
@@ -5359,7 +5367,7 @@ app.post('/admin/stock/bulk', authenticateToken, requirePermission('can_edit_pro
 
     // Bulk insert all license keys (duplicates allowed)
     const insertValues = cleanKeys.map(key => [product_id, key, req.customer_id]);
-    
+
     await pool.execute(
       `INSERT INTO product_stock (product_id, license_key, customer_id) VALUES ${insertValues.map(() => '(?, ?, ?)').join(', ')}`,
       insertValues.flat()
@@ -5502,8 +5510,8 @@ app.get('/admin/stock/analytics', authenticateToken, requirePermission('can_edit
 
     // Calculate overall statistics
     const overall = overallStats[0];
-    const soldPercentage = overall.total_stock > 0 
-      ? Math.round((overall.sold_stock / overall.total_stock) * 100) 
+    const soldPercentage = overall.total_stock > 0
+      ? Math.round((overall.sold_stock / overall.total_stock) * 100)
       : 0;
 
     res.json({
@@ -5536,7 +5544,7 @@ app.get('/admin/stock/analytics', authenticateToken, requirePermission('can_edit
 app.get('/admin/users', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '', role = '' } = req.query;
-    
+
     // Parse pagination parameters first
     const parsedPage = parseInt(page, 10) || 1;
     const parsedLimit = parseInt(limit, 10) || 10;
@@ -5570,12 +5578,12 @@ app.get('/admin/users', authenticateToken, requirePermission('can_edit_users'), 
       searchParams
     );
     const total = totalResult[0].total;
-    
+
     // Get users with pagination
     // Sanitize LIMIT and OFFSET values for direct SQL interpolation
     const limitSafe = Math.min(Math.max(parseInt(parsedLimit, 10) || 10, 1), 100);
     const offsetSafe = Math.max(parseInt(parsedOffset, 10) || 0, 0);
-    
+
     console.log('Admin Users Query Debug:', {
       searchConditions,
       searchParams,
@@ -5584,7 +5592,7 @@ app.get('/admin/users', authenticateToken, requirePermission('can_edit_users'), 
       paramCount: searchParams.length,
       placeholderCount: (searchConditions + ' ORDER BY u.created_at DESC').match(/\?/g)?.length || 0
     });
-    
+
     const [users] = await pool.execute(
       `SELECT 
         u.id,
@@ -6075,8 +6083,8 @@ app.get('/admin/roles', authenticateToken, requirePermission('can_edit_users'), 
 // Create new role (Admin only)
 app.post('/admin/roles', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
   try {
-    const { 
-      rank_name, 
+    const {
+      rank_name,
       can_edit_categories = false,
       can_edit_products = false,
       can_edit_users = false,
@@ -6203,7 +6211,7 @@ app.post('/admin/roles', authenticateToken, requirePermission('can_edit_users'),
 app.put('/admin/roles/:id', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { 
+    const {
       rank_name,
       can_edit_categories,
       can_edit_products,
@@ -6441,7 +6449,7 @@ app.delete('/admin/roles/:id', authenticateToken, requirePermission('can_edit_us
 // Get sales statistics (daily, weekly, monthly)
 app.get('/stats', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
   try {
-    const { 
+    const {
       period = 'daily', // 'daily', 'weekly', 'monthly'
       start_date = null,
       end_date = null,
@@ -6449,7 +6457,7 @@ app.get('/stats', authenticateToken, requirePermission('can_edit_products'), asy
     } = req.query;
 
     const customer_id = req.customer_id;
-    
+
     // Ensure parsedLimit is a valid integer
     let parsedLimit = parseInt(limit, 10);
     if (isNaN(parsedLimit) || parsedLimit <= 0) {
@@ -6460,12 +6468,12 @@ app.get('/stats', authenticateToken, requirePermission('can_edit_products'), asy
     // Build date filters
     let dateFilter = '';
     const dateParams = [];
-    
+
     if (start_date) {
       dateFilter += ' AND t.created_at >= ?';
       dateParams.push(new Date(start_date));
     }
-    
+
     if (end_date) {
       dateFilter += ' AND t.created_at <= ?';
       dateParams.push(new Date(end_date));
@@ -6474,7 +6482,7 @@ app.get('/stats', authenticateToken, requirePermission('can_edit_products'), asy
     // สร้าง query ตาม period ที่เลือก
     let groupByClause = '';
     let selectDateFormat = '';
-    
+
     if (period === 'daily') {
       selectDateFormat = 'DATE(t.created_at) as period_date';
       groupByClause = 'DATE(t.created_at)';
@@ -6864,10 +6872,10 @@ async function generatePromptPayQR(promptpayNumber, amount) {
   try {
     // Generate PromptPay payload
     const payload = generatePayload(promptpayNumber, { amount: amount });
-    
+
     // Generate QR Code as base64 image
     const qrCodeDataURL = await QRCode.toDataURL(payload);
-    
+
     return {
       payload: payload,
       qrCodeImage: qrCodeDataURL
@@ -6902,7 +6910,7 @@ function parseLineTransactionData(jsonString, targetAmount) {
         // Extract amount from transaction
         const amountText = flexJson.contents[0].body.contents[2]?.contents[1]?.contents[1]?.text || '';
         const cleanAmount = amountText.replace(/[บาท,]/g, '').trim();
-        
+
         if (!isNumeric(cleanAmount)) {
           continue;
         }
@@ -6911,7 +6919,7 @@ function parseLineTransactionData(jsonString, targetAmount) {
         if (amount === targetAmount) {
           const formattedAmount = amount.toFixed(2);
           const [whole, fractional] = formattedAmount.split('.');
-          
+
           matchedTransactions.push({
             transactionid: transaction.id || null,
             amount: formattedAmount,
@@ -6945,18 +6953,18 @@ function isNumeric(str) {
 app.post('/api/promptpay/create', authenticateToken, async (req, res) => {
   try {
     const { amount } = req.body;
-    
+
     if (!amount) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'กรุณาระบุจำนวนเงิน' 
+      return res.status(400).json({
+        success: false,
+        message: 'กรุณาระบุจำนวนเงิน'
       });
     }
 
     if (!req.customer_id) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'ไม่พบข้อมูลร้านค้า' 
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูลร้านค้า'
       });
     }
 
@@ -6975,18 +6983,18 @@ app.post('/api/promptpay/create', authenticateToken, async (req, res) => {
     );
 
     if (configRows.length === 0 || !configRows[0].promptpay_number) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'ยังไม่ได้ตั้งค่าพร้อมเพย์' 
+      return res.status(400).json({
+        success: false,
+        message: 'ยังไม่ได้ตั้งค่าพร้อมเพย์'
       });
     }
 
     const config = configRows[0];
     const qrData = await generatePromptPayQR(config.promptpay_number, parseFloat(amount));
-    
+
     // Set expiration time (15 minutes from now)
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
-    
+
     // Create payment record
     const [result] = await pool.execute(
       'INSERT INTO promptpay_payments (customer_id, user_id, amount, qr_code, expires_at) VALUES (?, ?, ?, ?, ?)',
@@ -7008,9 +7016,9 @@ app.post('/api/promptpay/create', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('Error creating PromptPay payment:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'เกิดข้อผิดพลาดในการสร้าง QR Code' 
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการสร้าง QR Code'
     });
   }
 });
@@ -7019,18 +7027,18 @@ app.post('/api/promptpay/create', authenticateToken, async (req, res) => {
 app.post('/api/promptpay/verify', authenticateToken, async (req, res) => {
   try {
     const { payment_id, amount } = req.body;
-    
+
     if (!payment_id || !amount) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'กรุณาระบุรหัสการชำระเงินและจำนวนเงิน' 
+      return res.status(400).json({
+        success: false,
+        message: 'กรุณาระบุรหัสการชำระเงินและจำนวนเงิน'
       });
     }
 
     if (!req.customer_id) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'ไม่พบข้อมูลร้านค้า' 
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูลร้านค้า'
       });
     }
 
@@ -7049,9 +7057,9 @@ app.post('/api/promptpay/verify', authenticateToken, async (req, res) => {
     );
 
     if (paymentRows.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'ไม่พบรายการชำระเงินหรือชำระเงินแล้ว' 
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบรายการชำระเงินหรือชำระเงินแล้ว'
       });
     }
 
@@ -7063,9 +7071,9 @@ app.post('/api/promptpay/verify', authenticateToken, async (req, res) => {
         'UPDATE promptpay_payments SET status = "expired" WHERE id = ?',
         [payment_id]
       );
-      return res.status(400).json({ 
-        success: false, 
-        message: 'QR Code หมดอายุแล้ว' 
+      return res.status(400).json({
+        success: false,
+        message: 'QR Code หมดอายุแล้ว'
       });
     }
 
@@ -7076,9 +7084,9 @@ app.post('/api/promptpay/verify', authenticateToken, async (req, res) => {
     );
 
     if (configRows.length === 0 || !configRows[0].line_cookie || !configRows[0].line_mac) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'ยังไม่ได้ตั้งค่า LINE API' 
+      return res.status(400).json({
+        success: false,
+        message: 'ยังไม่ได้ตั้งค่า LINE API'
       });
     }
 
@@ -7119,7 +7127,7 @@ app.post('/api/promptpay/verify', authenticateToken, async (req, res) => {
     if (parseResult.status === 'success' && parseResult.matched_transactions.length > 0) {
       // Payment verified
       const transaction = parseResult.matched_transactions[0];
-      
+
       await pool.execute(
         'UPDATE promptpay_payments SET status = "verified", transaction_id = ?, verified_at = NOW() WHERE id = ?',
         [transaction.transactionid, payment_id]
@@ -7154,9 +7162,9 @@ app.post('/api/promptpay/verify', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('Error verifying PromptPay payment:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'เกิดข้อผิดพลาดในการตรวจสอบการชำระเงิน' 
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการตรวจสอบการชำระเงิน'
     });
   }
 });
@@ -7165,11 +7173,11 @@ app.post('/api/promptpay/verify', authenticateToken, async (req, res) => {
 app.get('/api/promptpay/status/:payment_id', authenticateToken, async (req, res) => {
   try {
     const { payment_id } = req.params;
-    
+
     if (!req.customer_id) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'ไม่พบข้อมูลร้านค้า' 
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูลร้านค้า'
       });
     }
 
@@ -7187,14 +7195,14 @@ app.get('/api/promptpay/status/:payment_id', authenticateToken, async (req, res)
     );
 
     if (paymentRows.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'ไม่พบรายการชำระเงิน' 
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบรายการชำระเงิน'
       });
     }
 
     const payment = paymentRows[0];
-    
+
     // Check if payment has expired
     if (payment.status === 'pending' && new Date() > new Date(payment.expires_at)) {
       await pool.execute(
@@ -7219,9 +7227,9 @@ app.get('/api/promptpay/status/:payment_id', authenticateToken, async (req, res)
 
   } catch (error) {
     console.error('Error getting payment status:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'เกิดข้อผิดพลาดในการดึงสถานะการชำระเงิน' 
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงสถานะการชำระเงิน'
     });
   }
 });
@@ -7229,19 +7237,19 @@ app.get('/api/promptpay/status/:payment_id', authenticateToken, async (req, res)
 // Update PromptPay configuration
 app.post('/api/admin/promptpay/config', async (req, res) => {
   try {
-    const { 
-      promptpay_number, 
-      promptpay_name, 
-      line_cookie, 
-      line_mac, 
-      verify_token, 
-      auto_verify_enabled 
+    const {
+      promptpay_number,
+      promptpay_name,
+      line_cookie,
+      line_mac,
+      verify_token,
+      auto_verify_enabled
     } = req.body;
 
     if (!req.customer_id) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'ไม่พบข้อมูลร้านค้า' 
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูลร้านค้า'
       });
     }
 
@@ -7252,9 +7260,9 @@ app.post('/api/admin/promptpay/config', async (req, res) => {
     );
 
     if (existingConfig.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'ไม่พบการตั้งค่าร้านค้า' 
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบการตั้งค่าร้านค้า'
       });
     }
 
@@ -7287,9 +7295,9 @@ app.post('/api/admin/promptpay/config', async (req, res) => {
 
   } catch (error) {
     console.error('Error updating PromptPay config:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'เกิดข้อผิดพลาดในการอัปเดตการตั้งค่า' 
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการอัปเดตการตั้งค่า'
     });
   }
 });
@@ -7298,9 +7306,9 @@ app.post('/api/admin/promptpay/config', async (req, res) => {
 app.get('/api/admin/promptpay/config', async (req, res) => {
   try {
     if (!req.customer_id) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'ไม่พบข้อมูลร้านค้า' 
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูลร้านค้า'
       });
     }
 
@@ -7310,14 +7318,14 @@ app.get('/api/admin/promptpay/config', async (req, res) => {
     );
 
     if (configRows.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'ไม่พบการตั้งค่าร้านค้า' 
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบการตั้งค่าร้านค้า'
       });
     }
 
     const config = configRows[0];
-    
+
     // Don't expose sensitive data
     res.json({
       success: true,
@@ -7333,9 +7341,9 @@ app.get('/api/admin/promptpay/config', async (req, res) => {
 
   } catch (error) {
     console.error('Error getting PromptPay config:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'เกิดข้อผิดพลาดในการดึงการตั้งค่า' 
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงการตั้งค่า'
     });
   }
 });
@@ -8599,7 +8607,7 @@ setInterval(async () => {
 
         if (parseResult.status === 'success' && parseResult.matched_transactions.length > 0) {
           const transaction = parseResult.matched_transactions[0];
-          
+
           // Update payment status
           await pool.execute(
             'UPDATE promptpay_payments SET status = "verified", transaction_id = ?, verified_at = NOW() WHERE id = ?',
@@ -8643,10 +8651,10 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
     // Debug: Log image data info
     console.log('Image data length:', img.length);
     console.log('Image data starts with:', img.substring(0, 50));
-    
+
     // Validate and clean image data
     let cleanImg = img;
-    
+
     // Remove data URL prefix if present
     if (img.startsWith('data:image/')) {
       const base64Index = img.indexOf(',');
@@ -8655,7 +8663,7 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
         console.log('Removed data URL prefix, new length:', cleanImg.length);
       }
     }
-    
+
     // Validate base64 format
     const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
     if (!base64Regex.test(cleanImg)) {
@@ -8670,7 +8678,7 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
 
     // Try different approaches for API call
     let slipResponse;
-    
+
     try {
       // First try: Send as base64 string
       slipResponse = await axios.post('https://slip-c.oiioioiiioooioio.download/api/slip', {
@@ -8683,7 +8691,7 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       });
     } catch (error) {
       console.log('First attempt failed, trying with data URL format...');
-      
+
       // Second try: Send with data URL format
       slipResponse = await axios.post('https://slip-c.oiioioiiioooioio.download/api/slip', {
         img: img
@@ -8709,7 +8717,7 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
     }
 
     const { ref, amount, receiver_name, receiver_id } = slipData.data;
-    
+
     console.log('Slip data extracted:', {
       ref,
       amount,
@@ -8745,22 +8753,22 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
     }
 
     const config = configs[0];
-    
+
     // Priority 1: Check bank account number first
-    const idMatch = config.bank_account_number && 
+    const idMatch = config.bank_account_number &&
       (receiver_id.includes(config.bank_account_number) ||
-       config.bank_account_number.includes(receiver_id));
-    
+        config.bank_account_number.includes(receiver_id));
+
     // Priority 2: Check English name if number doesn't match
-    const englishNameMatch = !idMatch && config.bank_account_name && 
+    const englishNameMatch = !idMatch && config.bank_account_name &&
       (receiver_name.toLowerCase().includes(config.bank_account_name.toLowerCase()) ||
-       config.bank_account_name.toLowerCase().includes(receiver_name.toLowerCase()));
-    
+        config.bank_account_name.toLowerCase().includes(receiver_name.toLowerCase()));
+
     // Priority 3: Check Thai name if number and English name don't match
-    const thaiNameMatch = !idMatch && !englishNameMatch && config.bank_account_name_thai && 
+    const thaiNameMatch = !idMatch && !englishNameMatch && config.bank_account_name_thai &&
       (receiver_name.toLowerCase().includes(config.bank_account_name_thai.toLowerCase()) ||
-       config.bank_account_name_thai.toLowerCase().includes(receiver_name.toLowerCase()));
-    
+        config.bank_account_name_thai.toLowerCase().includes(receiver_name.toLowerCase()));
+
     console.log('Validation checks:', {
       config_number: config.bank_account_number,
       slip_id: receiver_id,
@@ -8771,7 +8779,7 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       config_thai_name: config.bank_account_name_thai,
       thai_name_match: thaiNameMatch
     });
-    
+
     // Check if any validation passes
     if (!idMatch && !englishNameMatch && !thaiNameMatch) {
       console.log('Validation failed - no match found');
@@ -8789,7 +8797,7 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
         }
       });
     }
-    
+
     console.log('Validation passed - proceeding with topup');
 
     // Validate amount
@@ -8811,13 +8819,13 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
         amount: amount,
         ref: ref
       });
-      
+
       // Insert into topups table
       const [topupResult] = await connection.execute(
         'INSERT INTO topups (customer_id, user_id, amount, method, transaction_ref, status) VALUES (?, ?, ?, ?, ?, ?)',
         [req.customer_id, req.user.id, amount, 'bank_transfer', ref, 'success']
       );
-      
+
       console.log('Topup record inserted:', topupResult.insertId);
 
       // Update user balance
@@ -8825,7 +8833,7 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
         'UPDATE users SET money = money + ? WHERE id = ? AND customer_id = ?',
         [amount, req.user.id, req.customer_id]
       );
-      
+
       console.log('User balance update result:', updateResult.affectedRows);
 
       if (updateResult.affectedRows === 0) {
@@ -8865,7 +8873,7 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('Slip processing error:', error);
-    
+
     if (error.response) {
       // API error
       return res.status(500).json({
@@ -9447,7 +9455,7 @@ app.get('/api/admin/topups/:id', authenticateToken, requirePermission('can_view_
 // Update topup status (Admin only)
 app.put('/api/admin/topups/:id', authenticateToken, requirePermission('can_edit_orders'), async (req, res) => {
   const connection = await pool.getConnection();
-  
+
   try {
     await connection.beginTransaction();
 
