@@ -716,7 +716,7 @@ app.get('/get-web-config', async (req, res) => {
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
        footer_logo, theme, ad_banner, font_select, 
-       bank_account_name, bank_account_number, bank_account_name_thai,
+       bank_account_name, bank_account_number, bank_account_name_thai, bank_name,
        promptpay_number, promptpay_name, 
        line_cookie, line_mac, verify_token, last_check, auto_verify_enabled, review, transac,
        created_at, updated_at 
@@ -769,6 +769,7 @@ app.get('/get-web-config', async (req, res) => {
         bank_account_name: config.bank_account_name,
         bank_account_number: config.bank_account_number,
         bank_account_name_thai: config.bank_account_name_thai,
+        bank_name: config.bank_name,
         // PromptPay configuration fields
         promptpay_number: config.promptpay_number,
         promptpay_name: config.promptpay_name,
@@ -7515,7 +7516,7 @@ app.get('/api/config/bank', authenticateToken, async (req, res) => {
     }
 
     const [configs] = await pool.execute(
-      `SELECT bank_account_name, bank_account_number, bank_account_name_thai
+      `SELECT bank_account_name, bank_account_number, bank_account_name_thai, bank_name
        FROM config WHERE customer_id = ? LIMIT 1`,
       [customerId]
     );
@@ -7533,7 +7534,8 @@ app.get('/api/config/bank', authenticateToken, async (req, res) => {
       data: {
         bank_account_name: configs[0].bank_account_name,
         bank_account_number: configs[0].bank_account_number,
-        bank_account_name_thai: configs[0].bank_account_name_thai
+        bank_account_name_thai: configs[0].bank_account_name_thai,
+        bank_name: configs[0].bank_name
       }
     });
 
@@ -7562,7 +7564,8 @@ app.put('/api/config/bank', authenticateToken, requirePermission('can_manage_set
     const {
       bank_account_name,
       bank_account_number,
-      bank_account_name_thai
+      bank_account_name_thai,
+      bank_name
     } = req.body;
 
     // ตรวจสอบว่ามี config อยู่แล้วหรือไม่
@@ -7594,6 +7597,10 @@ app.put('/api/config/bank', authenticateToken, requirePermission('can_manage_set
       updateFields.push('bank_account_name_thai = ?');
       updateValues.push(bank_account_name_thai);
     }
+    if (bank_name !== undefined) {
+      updateFields.push('bank_name = ?');
+      updateValues.push(bank_name);
+    }
 
     if (updateFields.length === 0) {
       return res.status(400).json({
@@ -7609,7 +7616,7 @@ app.put('/api/config/bank', authenticateToken, requirePermission('can_manage_set
 
     // ดึงข้อมูลที่อัปเดตแล้ว
     const [updatedConfigs] = await pool.execute(
-      `SELECT bank_account_name, bank_account_number, bank_account_name_thai
+      `SELECT bank_account_name, bank_account_number, bank_account_name_thai, bank_name
        FROM config WHERE customer_id = ? LIMIT 1`,
       [customerId]
     );
@@ -7620,7 +7627,8 @@ app.put('/api/config/bank', authenticateToken, requirePermission('can_manage_set
       data: {
         bank_account_name: updatedConfigs[0].bank_account_name,
         bank_account_number: updatedConfigs[0].bank_account_number,
-        bank_account_name_thai: updatedConfigs[0].bank_account_name_thai
+        bank_account_name_thai: updatedConfigs[0].bank_account_name_thai,
+        bank_name: updatedConfigs[0].bank_name
       }
     });
 
