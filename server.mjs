@@ -4493,6 +4493,387 @@ app.get('/admin/reports/overview', authenticateToken, requirePermission('can_edi
   }
 });
 
+// ==================== CHART/GRAPH ENDPOINTS ====================
+
+// Get revenue chart data (daily/monthly)
+app.get('/admin/charts/revenue', authenticateToken, requirePermission('can_view_reports'), async (req, res) => {
+  try {
+    const { period = 'daily', days = 30 } = req.query;
+    const parsedDays = parseInt(days) || 30;
+    
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - parsedDays);
+
+    let dateFormat, groupBy;
+    if (period === 'monthly') {
+      dateFormat = '%Y-%m';
+      groupBy = 'DATE_FORMAT(created_at, "%Y-%m")';
+    } else {
+      dateFormat = '%Y-%m-%d';
+      groupBy = 'DATE(created_at)';
+    }
+
+    const [revenueData] = await pool.execute(`
+      SELECT 
+        DATE_FORMAT(created_at, ?) as date,
+        COUNT(*) as transaction_count,
+        COALESCE(SUM(total_price), 0) as revenue
+      FROM transactions 
+      WHERE customer_id = ? AND created_at >= ?
+      GROUP BY ${groupBy}
+      ORDER BY date ASC
+    `, [dateFormat, req.customer_id, startDate]);
+
+    res.json({
+      success: true,
+      period,
+      days: parsedDays,
+      data: revenueData.map(item => ({
+        date: item.date,
+        revenue: parseFloat(item.revenue),
+        transaction_count: parseInt(item.transaction_count)
+      }))
+    });
+
+  } catch (error) {
+    console.error('Revenue chart error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get top selling products chart data
+app.get('/admin/charts/top-products', authenticateToken, requirePermission('can_view_reports'), async (req, res) => {
+  try {
+    const { limit = 10, days } = req.query;
+    const parsedLimit = Math.min(parseInt(limit) || 10, 50);
+
+    let dateCondition = '';
+    let params = [req.customer_id, req.customer_id];
+    
+    if (days) {
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - parseInt(days));
+      dateCondition = 'AND t.created_at >= ?';
+      params.push(startDate);
+    }
+
+    const [topProducts] = await pool.execute(`
+      SELECT 
+        p.id,
+        p.title,
+        p.image,
+        COUNT(ti.id) as sales_count,
+        SUM(ti.quantity) as total_quantity,
+        SUM(ti.price * ti.quantity) as total_revenue
+      FROM products p
+      INNER JOIN transaction_items ti ON p.id = ti.product_id
+      INNER JOIN transactions t ON ti.transaction_id = t.id
+      WHERE p.customer_id = ? AND t.customer_id = ? ${dateCondition}
+      GROUP BY p.id, p.title, p.image
+      ORDER BY sales_count DESC, total_revenue DESC
+      LIMIT ${parsedLimit}
+    `, params);
+
+    res.json({
+      success: true,
+      limit: parsedLimit,
+      data: topProducts.map(item => ({
+        id: item.id,
+        name: item.title,
+        image: item.image,
+        sales_count: parseInt(item.sales_count),
+        total_quantity: parseInt(item.total_quantity),
+        total_revenue: parseFloat(item.total_revenue)
+      }))
+    });
+
+  } catch (error) {
+    console.error('Top products chart error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get new users chart data
+app.get('/admin/charts/new-users', authenticateToken, requirePermission('can_view_reports'), async (req, res) => {
+  try {
+    const { period = 'daily', days = 30 } = req.query;
+    const parsedDays = parseInt(days) || 30;
+    
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - parsedDays);
+
+    let dateFormat, groupBy;
+    if (period === 'monthly') {
+      dateFormat = '%Y-%m';
+      groupBy = 'DATE_FORMAT(created_at, "%Y-%m")';
+    } else {
+      dateFormat = '%Y-%m-%d';
+      groupBy = 'DATE(created_at)';
+    }
+
+    const [usersData] = await pool.execute(`
+      SELECT 
+        DATE_FORMAT(created_at, ?) as date,
+        COUNT(*) as user_count
+      FROM users 
+      WHERE customer_id = ? AND created_at >= ?
+      GROUP BY ${groupBy}
+      ORDER BY date ASC
+    `, [dateFormat, req.customer_id, startDate]);
+
+    res.json({
+      success: true,
+      period,
+      days: parsedDays,
+      data: usersData.map(item => ({
+        date: item.date,
+        user_count: parseInt(item.user_count)
+      }))
+    });
+
+  } catch (error) {
+    console.error('New users chart error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get topup chart data
+app.get('/admin/charts/topups', authenticateToken, requirePermission('can_view_reports'), async (req, res) => {
+  try {
+    const { period = 'daily', days = 30 } = req.query;
+    const parsedDays = parseInt(days) || 30;
+    
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - parsedDays);
+
+    let dateFormat, groupBy;
+    if (period === 'monthly') {
+      dateFormat = '%Y-%m';
+      groupBy = 'DATE_FORMAT(created_at, "%Y-%m")';
+    } else {
+      dateFormat = '%Y-%m-%d';
+      groupBy = 'DATE(created_at)';
+    }
+
+    const [topupData] = await pool.execute(`
+      SELECT 
+        DATE_FORMAT(created_at, ?) as date,
+        COUNT(*) as topup_count,
+        COALESCE(SUM(amount), 0) as total_amount
+      FROM topups 
+      WHERE customer_id = ? AND created_at >= ? AND status = 'success'
+      GROUP BY ${groupBy}
+      ORDER BY date ASC
+    `, [dateFormat, req.customer_id, startDate]);
+
+    res.json({
+      success: true,
+      period,
+      days: parsedDays,
+      data: topupData.map(item => ({
+        date: item.date,
+        topup_count: parseInt(item.topup_count),
+        total_amount: parseFloat(item.total_amount)
+      }))
+    });
+
+  } catch (error) {
+    console.error('Topup chart error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get category sales distribution chart
+app.get('/admin/charts/category-sales', authenticateToken, requirePermission('can_view_reports'), async (req, res) => {
+  try {
+    const { days } = req.query;
+
+    let dateCondition = '';
+    let params = [req.customer_id, req.customer_id];
+    
+    if (days) {
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - parseInt(days));
+      dateCondition = 'AND t.created_at >= ?';
+      params.push(startDate);
+    }
+
+    const [categoryData] = await pool.execute(`
+      SELECT 
+        c.id,
+        c.title as category_name,
+        COUNT(ti.id) as sales_count,
+        SUM(ti.quantity) as total_quantity,
+        SUM(ti.price * ti.quantity) as total_revenue
+      FROM categories c
+      INNER JOIN products p ON c.id = p.category_id
+      INNER JOIN transaction_items ti ON p.id = ti.product_id
+      INNER JOIN transactions t ON ti.transaction_id = t.id
+      WHERE c.customer_id = ? AND t.customer_id = ? ${dateCondition}
+      GROUP BY c.id, c.title
+      ORDER BY total_revenue DESC
+    `, params);
+
+    res.json({
+      success: true,
+      data: categoryData.map(item => ({
+        id: item.id,
+        category_name: item.category_name,
+        sales_count: parseInt(item.sales_count),
+        total_quantity: parseInt(item.total_quantity),
+        total_revenue: parseFloat(item.total_revenue)
+      }))
+    });
+
+  } catch (error) {
+    console.error('Category sales chart error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get comprehensive dashboard data (all charts in one call)
+app.get('/admin/charts/dashboard', authenticateToken, requirePermission('can_view_reports'), async (req, res) => {
+  try {
+    const { days = 30 } = req.query;
+    const parsedDays = parseInt(days) || 30;
+    
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - parsedDays);
+
+    // Daily Revenue
+    const [revenueData] = await pool.execute(`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as transaction_count,
+        COALESCE(SUM(total_price), 0) as revenue
+      FROM transactions 
+      WHERE customer_id = ? AND created_at >= ?
+      GROUP BY DATE(created_at)
+      ORDER BY date ASC
+    `, [req.customer_id, startDate]);
+
+    // Top Products
+    const [topProducts] = await pool.execute(`
+      SELECT 
+        p.id,
+        p.title,
+        p.image,
+        COUNT(ti.id) as sales_count,
+        SUM(ti.price * ti.quantity) as total_revenue
+      FROM products p
+      INNER JOIN transaction_items ti ON p.id = ti.product_id
+      INNER JOIN transactions t ON ti.transaction_id = t.id
+      WHERE p.customer_id = ? AND t.customer_id = ? AND t.created_at >= ?
+      GROUP BY p.id, p.title, p.image
+      ORDER BY sales_count DESC
+      LIMIT 10
+    `, [req.customer_id, req.customer_id, startDate]);
+
+    // New Users
+    const [usersData] = await pool.execute(`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as user_count
+      FROM users 
+      WHERE customer_id = ? AND created_at >= ?
+      GROUP BY DATE(created_at)
+      ORDER BY date ASC
+    `, [req.customer_id, startDate]);
+
+    // Topups
+    const [topupData] = await pool.execute(`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as topup_count,
+        COALESCE(SUM(amount), 0) as total_amount
+      FROM topups 
+      WHERE customer_id = ? AND created_at >= ? AND status = 'success'
+      GROUP BY DATE(created_at)
+      ORDER BY date ASC
+    `, [req.customer_id, startDate]);
+
+    // Category Distribution
+    const [categoryData] = await pool.execute(`
+      SELECT 
+        c.id,
+        c.title as category_name,
+        COUNT(ti.id) as sales_count,
+        SUM(ti.price * ti.quantity) as total_revenue
+      FROM categories c
+      INNER JOIN products p ON c.id = p.category_id
+      INNER JOIN transaction_items ti ON p.id = ti.product_id
+      INNER JOIN transactions t ON ti.transaction_id = t.id
+      WHERE c.customer_id = ? AND t.customer_id = ? AND t.created_at >= ?
+      GROUP BY c.id, c.title
+      ORDER BY total_revenue DESC
+    `, [req.customer_id, req.customer_id, startDate]);
+
+    res.json({
+      success: true,
+      days: parsedDays,
+      charts: {
+        revenue: revenueData.map(item => ({
+          date: item.date,
+          revenue: parseFloat(item.revenue),
+          transaction_count: parseInt(item.transaction_count)
+        })),
+        top_products: topProducts.map(item => ({
+          id: item.id,
+          name: item.title,
+          image: item.image,
+          sales_count: parseInt(item.sales_count),
+          total_revenue: parseFloat(item.total_revenue)
+        })),
+        new_users: usersData.map(item => ({
+          date: item.date,
+          user_count: parseInt(item.user_count)
+        })),
+        topups: topupData.map(item => ({
+          date: item.date,
+          topup_count: parseInt(item.topup_count),
+          total_amount: parseFloat(item.total_amount)
+        })),
+        category_distribution: categoryData.map(item => ({
+          id: item.id,
+          category_name: item.category_name,
+          sales_count: parseInt(item.sales_count),
+          total_revenue: parseFloat(item.total_revenue)
+        }))
+      }
+    });
+
+  } catch (error) {
+    console.error('Dashboard charts error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// ==================== END CHART/GRAPH ENDPOINTS ====================
+
 // Get detailed sales report
 app.get('/admin/reports/sales', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
   try {
