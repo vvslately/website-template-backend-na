@@ -7515,7 +7515,7 @@ app.get('/api/config/bank', authenticateToken, async (req, res) => {
     }
 
     const [configs] = await pool.execute(
-      `SELECT bank_account_name, bank_account_number, bank_account_name_thai 
+      `SELECT bank_account_name, bank_account_number, bank_account_name_thai
        FROM config WHERE customer_id = ? LIMIT 1`,
       [customerId]
     );
@@ -7609,7 +7609,7 @@ app.put('/api/config/bank', authenticateToken, requirePermission('can_manage_set
 
     // ดึงข้อมูลที่อัปเดตแล้ว
     const [updatedConfigs] = await pool.execute(
-      `SELECT bank_account_name, bank_account_number, bank_account_name_thai 
+      `SELECT bank_account_name, bank_account_number, bank_account_name_thai
        FROM config WHERE customer_id = ? LIMIT 1`,
       [customerId]
     );
@@ -8870,6 +8870,311 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'เกิดข้อผิดพลาดในการประมวลผลสลิป',
+      error: error.message
+    });
+  }
+});
+
+// ==================== CONTACT CHANNELS SYSTEM ====================
+
+// ดึงรายการช่องทางติดต่อทั้งหมด (Public - สำหรับแสดงในหน้า Contact Us)
+app.get('/api/contacts', async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูล customer_id'
+      });
+    }
+
+    // ดึงเฉพาะที่ is_active = 1 และเรียงตาม priority
+    const [contacts] = await pool.execute(
+      `SELECT id, contact_name, contact_link, contact_photo, priority
+       FROM contacts 
+       WHERE customer_id = ? AND is_active = 1
+       ORDER BY priority ASC, created_at ASC`,
+      [customerId]
+    );
+
+    res.json({
+      success: true,
+      message: 'ดึงข้อมูลช่องทางติดต่อสำเร็จ',
+      data: contacts
+    });
+
+  } catch (error) {
+    console.error('Error fetching contacts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงข้อมูล',
+      error: error.message
+    });
+  }
+});
+
+// ดึงรายการช่องทางติดต่อทั้งหมด (สำหรับ Admin - รวมที่ไม่ active)
+app.get('/api/admin/contacts', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูล customer_id'
+      });
+    }
+
+    const [contacts] = await pool.execute(
+      `SELECT * FROM contacts 
+       WHERE customer_id = ?
+       ORDER BY priority ASC, created_at ASC`,
+      [customerId]
+    );
+
+    res.json({
+      success: true,
+      message: 'ดึงข้อมูลช่องทางติดต่อสำเร็จ',
+      data: contacts
+    });
+
+  } catch (error) {
+    console.error('Error fetching contacts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงข้อมูล',
+      error: error.message
+    });
+  }
+});
+
+// สร้างช่องทางติดต่อใหม่ (Admin only)
+app.post('/api/admin/contacts', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    const { contact_name, contact_link, contact_photo, priority, is_active } = req.body;
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูล customer_id'
+      });
+    }
+
+    // ตรวจสอบข้อมูลที่จำเป็น
+    if (!contact_name || !contact_link) {
+      return res.status(400).json({
+        success: false,
+        message: 'กรุณากรอกข้อมูลให้ครบถ้วน (ชื่อช่องทาง, ลิงก์/ข้อมูลติดต่อ)'
+      });
+    }
+
+    // บันทึกลงฐานข้อมูล
+    const [result] = await pool.execute(
+      `INSERT INTO contacts (customer_id, contact_name, contact_link, contact_photo, priority, is_active) 
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        customerId,
+        contact_name,
+        contact_link,
+        contact_photo || null,
+        priority !== undefined ? priority : 0,
+        is_active !== undefined ? (is_active ? 1 : 0) : 1
+      ]
+    );
+
+    // ดึงข้อมูลที่สร้างแล้ว
+    const [newContact] = await pool.execute(
+      'SELECT * FROM contacts WHERE id = ?',
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'สร้างช่องทางติดต่อสำเร็จ',
+      data: newContact[0]
+    });
+
+  } catch (error) {
+    console.error('Error creating contact:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการสร้างช่องทางติดต่อ',
+      error: error.message
+    });
+  }
+});
+
+// ดึงช่องทางติดต่อตาม ID
+app.get('/api/admin/contacts/:id', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูล customer_id'
+      });
+    }
+
+    const [contacts] = await pool.execute(
+      'SELECT * FROM contacts WHERE id = ? AND customer_id = ?',
+      [id, customerId]
+    );
+
+    if (contacts.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบช่องทางติดต่อที่ระบุ'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'ดึงข้อมูลช่องทางติดต่อสำเร็จ',
+      data: contacts[0]
+    });
+
+  } catch (error) {
+    console.error('Error fetching contact:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงข้อมูล',
+      error: error.message
+    });
+  }
+});
+
+// อัปเดตช่องทางติดต่อ (Admin only)
+app.put('/api/admin/contacts/:id', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { contact_name, contact_link, contact_photo, priority, is_active } = req.body;
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูล customer_id'
+      });
+    }
+
+    // ตรวจสอบว่ามีช่องทางติดต่ออยู่หรือไม่
+    const [existingContacts] = await pool.execute(
+      'SELECT id FROM contacts WHERE id = ? AND customer_id = ?',
+      [id, customerId]
+    );
+
+    if (existingContacts.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบช่องทางติดต่อที่ระบุ'
+      });
+    }
+
+    // สร้าง dynamic query
+    const updateFields = [];
+    const updateValues = [];
+
+    if (contact_name !== undefined) {
+      updateFields.push('contact_name = ?');
+      updateValues.push(contact_name);
+    }
+    if (contact_link !== undefined) {
+      updateFields.push('contact_link = ?');
+      updateValues.push(contact_link);
+    }
+    if (contact_photo !== undefined) {
+      updateFields.push('contact_photo = ?');
+      updateValues.push(contact_photo);
+    }
+    if (priority !== undefined) {
+      updateFields.push('priority = ?');
+      updateValues.push(priority);
+    }
+    if (is_active !== undefined) {
+      updateFields.push('is_active = ?');
+      updateValues.push(is_active ? 1 : 0);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่มีข้อมูลที่จะอัปเดต'
+      });
+    }
+
+    updateValues.push(id, customerId);
+
+    const updateQuery = `UPDATE contacts SET ${updateFields.join(', ')} WHERE id = ? AND customer_id = ?`;
+    await pool.execute(updateQuery, updateValues);
+
+    // ดึงข้อมูลที่อัปเดตแล้ว
+    const [updatedContacts] = await pool.execute(
+      'SELECT * FROM contacts WHERE id = ? AND customer_id = ?',
+      [id, customerId]
+    );
+
+    res.json({
+      success: true,
+      message: 'อัปเดตช่องทางติดต่อสำเร็จ',
+      data: updatedContacts[0]
+    });
+
+  } catch (error) {
+    console.error('Error updating contact:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการอัปเดต',
+      error: error.message
+    });
+  }
+});
+
+// ลบช่องทางติดต่อ (Admin only)
+app.delete('/api/admin/contacts/:id', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูล customer_id'
+      });
+    }
+
+    // ตรวจสอบว่ามีช่องทางติดต่ออยู่หรือไม่
+    const [existingContacts] = await pool.execute(
+      'SELECT id FROM contacts WHERE id = ? AND customer_id = ?',
+      [id, customerId]
+    );
+
+    if (existingContacts.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบช่องทางติดต่อที่ระบุ'
+      });
+    }
+
+    // ลบช่องทางติดต่อ
+    await pool.execute(
+      'DELETE FROM contacts WHERE id = ? AND customer_id = ?',
+      [id, customerId]
+    );
+
+    res.json({
+      success: true,
+      message: 'ลบช่องทางติดต่อสำเร็จ'
+    });
+
+  } catch (error) {
+    console.error('Error deleting contact:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการลบช่องทางติดต่อ',
       error: error.message
     });
   }
