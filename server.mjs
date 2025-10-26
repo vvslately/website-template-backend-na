@@ -4,6 +4,11 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import cors from 'cors';
 import axios from 'axios';
+import QRCode from 'qrcode';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const generatePayload = require('promptpay-qr');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -6854,10 +6859,22 @@ app.listen(PORT, () => {
 // ==================== PROMPTPAY PAYMENT SYSTEM ====================
 
 // Helper function to generate PromptPay QR code
-function generatePromptPayQR(promptpayNumber, amount) {
-  // Format: 00020101021229370016A00000067701011101130066801234567890253037645802TH5406100.0053037646304
-  const qrData = `00020101021229370016A00000067701011101130066${promptpayNumber}0253037645802TH5406${amount.toFixed(2)}53037646304`;
-  return qrData;
+async function generatePromptPayQR(promptpayNumber, amount) {
+  try {
+    // Generate PromptPay payload
+    const payload = generatePayload(promptpayNumber, { amount: amount });
+    
+    // Generate QR Code as base64 image
+    const qrCodeDataURL = await QRCode.toDataURL(payload);
+    
+    return {
+      payload: payload,
+      qrCodeImage: qrCodeDataURL
+    };
+  } catch (error) {
+    console.error('Error generating PromptPay QR:', error);
+    throw new Error('ไม่สามารถสร้าง QR Code ได้');
+  }
 }
 
 // Helper function to parse LINE transaction data
@@ -6964,7 +6981,7 @@ app.post('/api/promptpay/create', authenticateToken, async (req, res) => {
     }
 
     const config = configRows[0];
-    const qrCode = generatePromptPayQR(config.promptpay_number, parseFloat(amount));
+    const qrData = await generatePromptPayQR(config.promptpay_number, parseFloat(amount));
     
     // Set expiration time (15 minutes from now)
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
@@ -6972,7 +6989,7 @@ app.post('/api/promptpay/create', authenticateToken, async (req, res) => {
     // Create payment record
     const [result] = await pool.execute(
       'INSERT INTO promptpay_payments (customer_id, user_id, amount, qr_code, expires_at) VALUES (?, ?, ?, ?, ?)',
-      [req.customer_id, req.user.id, amount, qrCode, expiresAt]
+      [req.customer_id, req.user.id, amount, qrData.payload, expiresAt]
     );
 
     res.json({
@@ -6980,7 +6997,8 @@ app.post('/api/promptpay/create', authenticateToken, async (req, res) => {
       message: 'สร้าง QR Code สำเร็จ',
       data: {
         payment_id: result.insertId,
-        qr_code: qrCode,
+        qr_code: qrData.payload,
+        qr_image: qrData.qrCodeImage,
         amount: amount,
         promptpay_name: config.promptpay_name,
         expires_at: expiresAt
@@ -7318,6 +7336,1214 @@ app.get('/api/admin/promptpay/config', async (req, res) => {
       success: false, 
       message: 'เกิดข้อผิดพลาดในการดึงการตั้งค่า' 
     });
+  }
+});
+
+// ==================== CONFIG MANAGEMENT ENDPOINTS ====================
+
+// ดึง PromptPay Config เฉพาะ
+app.get('/api/config/promptpay', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    const [configs] = await pool.execute(
+      `SELECT promptpay_number, promptpay_name, line_cookie, line_mac, 
+              verify_token, last_check, auto_verify_enabled 
+       FROM config WHERE customer_id = ? LIMIT 1`,
+      [customerId]
+    );
+
+    if (configs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบการตั้งค่า PromptPay'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'ดึงการตั้งค่า PromptPay สำเร็จ',
+      data: {
+        promptpay_number: configs[0].promptpay_number,
+        promptpay_name: configs[0].promptpay_name,
+        line_cookie: configs[0].line_cookie,
+        line_mac: configs[0].line_mac,
+        verify_token: configs[0].verify_token,
+        last_check: configs[0].last_check,
+        auto_verify_enabled: configs[0].auto_verify_enabled
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching PromptPay config:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงการตั้งค่า PromptPay',
+      error: error.message
+    });
+  }
+});
+
+// อัปเดต PromptPay Config
+app.put('/api/config/promptpay', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    const {
+      promptpay_number,
+      promptpay_name,
+      line_cookie,
+      line_mac,
+      verify_token,
+      auto_verify_enabled
+    } = req.body;
+
+    // ตรวจสอบว่ามี config อยู่แล้วหรือไม่
+    const [existingConfigs] = await pool.execute(
+      'SELECT id FROM config WHERE customer_id = ?',
+      [customerId]
+    );
+
+    if (existingConfigs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบการตั้งค่า'
+      });
+    }
+
+    // สร้าง dynamic query สำหรับอัปเดตเฉพาะฟิลด์ที่ส่งมา
+    const updateFields = [];
+    const updateValues = [];
+
+    if (promptpay_number !== undefined) {
+      updateFields.push('promptpay_number = ?');
+      updateValues.push(promptpay_number);
+    }
+    if (promptpay_name !== undefined) {
+      updateFields.push('promptpay_name = ?');
+      updateValues.push(promptpay_name);
+    }
+    if (line_cookie !== undefined) {
+      updateFields.push('line_cookie = ?');
+      updateValues.push(line_cookie);
+    }
+    if (line_mac !== undefined) {
+      updateFields.push('line_mac = ?');
+      updateValues.push(line_mac);
+    }
+    if (verify_token !== undefined) {
+      updateFields.push('verify_token = ?');
+      updateValues.push(verify_token);
+    }
+    if (auto_verify_enabled !== undefined) {
+      updateFields.push('auto_verify_enabled = ?');
+      updateValues.push(auto_verify_enabled ? 1 : 0);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่มีข้อมูลที่จะอัปเดต'
+      });
+    }
+
+    // อัปเดต last_check เป็นเวลาปัจจุบัน
+    updateFields.push('last_check = NOW()');
+
+    // เพิ่ม customer_id ในตัวแปรสุดท้าย
+    updateValues.push(customerId);
+
+    const updateQuery = `UPDATE config SET ${updateFields.join(', ')} WHERE customer_id = ?`;
+    await pool.execute(updateQuery, updateValues);
+
+    // ดึงข้อมูลที่อัปเดตแล้ว
+    const [updatedConfigs] = await pool.execute(
+      `SELECT promptpay_number, promptpay_name, line_cookie, line_mac, 
+              verify_token, last_check, auto_verify_enabled 
+       FROM config WHERE customer_id = ? LIMIT 1`,
+      [customerId]
+    );
+
+    res.json({
+      success: true,
+      message: 'อัปเดตการตั้งค่า PromptPay สำเร็จ',
+      data: {
+        promptpay_number: updatedConfigs[0].promptpay_number,
+        promptpay_name: updatedConfigs[0].promptpay_name,
+        line_cookie: updatedConfigs[0].line_cookie,
+        line_mac: updatedConfigs[0].line_mac,
+        verify_token: updatedConfigs[0].verify_token,
+        last_check: updatedConfigs[0].last_check,
+        auto_verify_enabled: updatedConfigs[0].auto_verify_enabled
+      }
+    });
+
+  } catch (error) {
+    console.error('Error updating PromptPay config:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการอัปเดตการตั้งค่า PromptPay',
+      error: error.message
+    });
+  }
+});
+
+// ดึง Bank Config เฉพาะ
+app.get('/api/config/bank', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    const [configs] = await pool.execute(
+      `SELECT bank_account_name, bank_account_number, bank_account_name_thai 
+       FROM config WHERE customer_id = ? LIMIT 1`,
+      [customerId]
+    );
+
+    if (configs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบการตั้งค่าบัญชีธนาคาร'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'ดึงการตั้งค่าบัญชีธนาคารสำเร็จ',
+      data: {
+        bank_account_name: configs[0].bank_account_name,
+        bank_account_number: configs[0].bank_account_number,
+        bank_account_name_thai: configs[0].bank_account_name_thai
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching bank config:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงการตั้งค่าบัญชีธนาคาร',
+      error: error.message
+    });
+  }
+});
+
+// อัปเดต Bank Config
+app.put('/api/config/bank', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    const {
+      bank_account_name,
+      bank_account_number,
+      bank_account_name_thai
+    } = req.body;
+
+    // ตรวจสอบว่ามี config อยู่แล้วหรือไม่
+    const [existingConfigs] = await pool.execute(
+      'SELECT id FROM config WHERE customer_id = ?',
+      [customerId]
+    );
+
+    if (existingConfigs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบการตั้งค่า'
+      });
+    }
+
+    // สร้าง dynamic query
+    const updateFields = [];
+    const updateValues = [];
+
+    if (bank_account_name !== undefined) {
+      updateFields.push('bank_account_name = ?');
+      updateValues.push(bank_account_name);
+    }
+    if (bank_account_number !== undefined) {
+      updateFields.push('bank_account_number = ?');
+      updateValues.push(bank_account_number);
+    }
+    if (bank_account_name_thai !== undefined) {
+      updateFields.push('bank_account_name_thai = ?');
+      updateValues.push(bank_account_name_thai);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่มีข้อมูลที่จะอัปเดต'
+      });
+    }
+
+    updateValues.push(customerId);
+
+    const updateQuery = `UPDATE config SET ${updateFields.join(', ')} WHERE customer_id = ?`;
+    await pool.execute(updateQuery, updateValues);
+
+    // ดึงข้อมูลที่อัปเดตแล้ว
+    const [updatedConfigs] = await pool.execute(
+      `SELECT bank_account_name, bank_account_number, bank_account_name_thai 
+       FROM config WHERE customer_id = ? LIMIT 1`,
+      [customerId]
+    );
+
+    res.json({
+      success: true,
+      message: 'อัปเดตการตั้งค่าบัญชีธนาคารสำเร็จ',
+      data: {
+        bank_account_name: updatedConfigs[0].bank_account_name,
+        bank_account_number: updatedConfigs[0].bank_account_number,
+        bank_account_name_thai: updatedConfigs[0].bank_account_name_thai
+      }
+    });
+
+  } catch (error) {
+    console.error('Error updating bank config:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการอัปเดตการตั้งค่าบัญชีธนาคาร',
+      error: error.message
+    });
+  }
+});
+
+// ดึง Site Config เฉพาะ (ข้อมูลเว็บไซต์พื้นฐาน)
+app.get('/api/config/site', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    const [configs] = await pool.execute(
+      `SELECT owner_phone, site_name, site_logo, meta_title, meta_description, 
+              meta_keywords, meta_author, discord_link, discord_webhook, 
+              theme, font_select, review, transac
+       FROM config WHERE customer_id = ? LIMIT 1`,
+      [customerId]
+    );
+
+    if (configs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบการตั้งค่าเว็บไซต์'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'ดึงการตั้งค่าเว็บไซต์สำเร็จ',
+      data: {
+        owner_phone: configs[0].owner_phone,
+        site_name: configs[0].site_name,
+        site_logo: configs[0].site_logo,
+        meta_title: configs[0].meta_title,
+        meta_description: configs[0].meta_description,
+        meta_keywords: configs[0].meta_keywords,
+        meta_author: configs[0].meta_author,
+        discord_link: configs[0].discord_link,
+        discord_webhook: configs[0].discord_webhook,
+        theme: configs[0].theme,
+        font_select: configs[0].font_select,
+        review: configs[0].review,
+        transac: configs[0].transac
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching site config:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงการตั้งค่าเว็บไซต์',
+      error: error.message
+    });
+  }
+});
+
+// อัปเดต Site Config
+app.put('/api/config/site', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    const {
+      owner_phone,
+      site_name,
+      site_logo,
+      meta_title,
+      meta_description,
+      meta_keywords,
+      meta_author,
+      discord_link,
+      discord_webhook,
+      theme,
+      font_select,
+      review,
+      transac
+    } = req.body;
+
+    // ตรวจสอบว่ามี config อยู่แล้วหรือไม่
+    const [existingConfigs] = await pool.execute(
+      'SELECT id FROM config WHERE customer_id = ?',
+      [customerId]
+    );
+
+    if (existingConfigs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบการตั้งค่า'
+      });
+    }
+
+    // สร้าง dynamic query
+    const updateFields = [];
+    const updateValues = [];
+
+    if (owner_phone !== undefined) {
+      updateFields.push('owner_phone = ?');
+      updateValues.push(owner_phone);
+    }
+    if (site_name !== undefined) {
+      updateFields.push('site_name = ?');
+      updateValues.push(site_name);
+    }
+    if (site_logo !== undefined) {
+      updateFields.push('site_logo = ?');
+      updateValues.push(site_logo);
+    }
+    if (meta_title !== undefined) {
+      updateFields.push('meta_title = ?');
+      updateValues.push(meta_title);
+    }
+    if (meta_description !== undefined) {
+      updateFields.push('meta_description = ?');
+      updateValues.push(meta_description);
+    }
+    if (meta_keywords !== undefined) {
+      updateFields.push('meta_keywords = ?');
+      updateValues.push(meta_keywords);
+    }
+    if (meta_author !== undefined) {
+      updateFields.push('meta_author = ?');
+      updateValues.push(meta_author);
+    }
+    if (discord_link !== undefined) {
+      updateFields.push('discord_link = ?');
+      updateValues.push(discord_link);
+    }
+    if (discord_webhook !== undefined) {
+      updateFields.push('discord_webhook = ?');
+      updateValues.push(discord_webhook);
+    }
+    if (theme !== undefined) {
+      updateFields.push('theme = ?');
+      updateValues.push(theme);
+    }
+    if (font_select !== undefined) {
+      updateFields.push('font_select = ?');
+      updateValues.push(font_select);
+    }
+    if (review !== undefined) {
+      updateFields.push('review = ?');
+      updateValues.push(review ? 1 : 0);
+    }
+    if (transac !== undefined) {
+      updateFields.push('transac = ?');
+      updateValues.push(transac ? 1 : 0);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่มีข้อมูลที่จะอัปเดต'
+      });
+    }
+
+    updateValues.push(customerId);
+
+    const updateQuery = `UPDATE config SET ${updateFields.join(', ')} WHERE customer_id = ?`;
+    await pool.execute(updateQuery, updateValues);
+
+    // ดึงข้อมูลที่อัปเดตแล้ว
+    const [updatedConfigs] = await pool.execute(
+      `SELECT owner_phone, site_name, site_logo, meta_title, meta_description, 
+              meta_keywords, meta_author, discord_link, discord_webhook, 
+              theme, font_select, review, transac
+       FROM config WHERE customer_id = ? LIMIT 1`,
+      [customerId]
+    );
+
+    res.json({
+      success: true,
+      message: 'อัปเดตการตั้งค่าเว็บไซต์สำเร็จ',
+      data: {
+        owner_phone: updatedConfigs[0].owner_phone,
+        site_name: updatedConfigs[0].site_name,
+        site_logo: updatedConfigs[0].site_logo,
+        meta_title: updatedConfigs[0].meta_title,
+        meta_description: updatedConfigs[0].meta_description,
+        meta_keywords: updatedConfigs[0].meta_keywords,
+        meta_author: updatedConfigs[0].meta_author,
+        discord_link: updatedConfigs[0].discord_link,
+        discord_webhook: updatedConfigs[0].discord_webhook,
+        theme: updatedConfigs[0].theme,
+        font_select: updatedConfigs[0].font_select,
+        review: updatedConfigs[0].review,
+        transac: updatedConfigs[0].transac
+      }
+    });
+
+  } catch (error) {
+    console.error('Error updating site config:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการอัปเดตการตั้งค่าเว็บไซต์',
+      error: error.message
+    });
+  }
+});
+
+// ดึง Banner Config เฉพาะ
+app.get('/api/config/banners', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    const [configs] = await pool.execute(
+      `SELECT banner_link, banner2_link, banner3_link, 
+              navigation_banner_1, navigation_link_1,
+              navigation_banner_2, navigation_link_2,
+              navigation_banner_3, navigation_link_3,
+              navigation_banner_4, navigation_link_4,
+              background_image, footer_image, load_logo, footer_logo, ad_banner
+       FROM config WHERE customer_id = ? LIMIT 1`,
+      [customerId]
+    );
+
+    if (configs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบการตั้งค่าแบนเนอร์'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'ดึงการตั้งค่าแบนเนอร์สำเร็จ',
+      data: {
+        banner_link: configs[0].banner_link,
+        banner2_link: configs[0].banner2_link,
+        banner3_link: configs[0].banner3_link,
+        navigation_banner_1: configs[0].navigation_banner_1,
+        navigation_link_1: configs[0].navigation_link_1,
+        navigation_banner_2: configs[0].navigation_banner_2,
+        navigation_link_2: configs[0].navigation_link_2,
+        navigation_banner_3: configs[0].navigation_banner_3,
+        navigation_link_3: configs[0].navigation_link_3,
+        navigation_banner_4: configs[0].navigation_banner_4,
+        navigation_link_4: configs[0].navigation_link_4,
+        background_image: configs[0].background_image,
+        footer_image: configs[0].footer_image,
+        load_logo: configs[0].load_logo,
+        footer_logo: configs[0].footer_logo,
+        ad_banner: configs[0].ad_banner
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching banner config:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงการตั้งค่าแบนเนอร์',
+      error: error.message
+    });
+  }
+});
+
+// อัปเดต Banner Config
+app.put('/api/config/banners', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    const {
+      banner_link,
+      banner2_link,
+      banner3_link,
+      navigation_banner_1,
+      navigation_link_1,
+      navigation_banner_2,
+      navigation_link_2,
+      navigation_banner_3,
+      navigation_link_3,
+      navigation_banner_4,
+      navigation_link_4,
+      background_image,
+      footer_image,
+      load_logo,
+      footer_logo,
+      ad_banner
+    } = req.body;
+
+    // ตรวจสอบว่ามี config อยู่แล้วหรือไม่
+    const [existingConfigs] = await pool.execute(
+      'SELECT id FROM config WHERE customer_id = ?',
+      [customerId]
+    );
+
+    if (existingConfigs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบการตั้งค่า'
+      });
+    }
+
+    // สร้าง dynamic query
+    const updateFields = [];
+    const updateValues = [];
+
+    if (banner_link !== undefined) {
+      updateFields.push('banner_link = ?');
+      updateValues.push(banner_link);
+    }
+    if (banner2_link !== undefined) {
+      updateFields.push('banner2_link = ?');
+      updateValues.push(banner2_link);
+    }
+    if (banner3_link !== undefined) {
+      updateFields.push('banner3_link = ?');
+      updateValues.push(banner3_link);
+    }
+    if (navigation_banner_1 !== undefined) {
+      updateFields.push('navigation_banner_1 = ?');
+      updateValues.push(navigation_banner_1);
+    }
+    if (navigation_link_1 !== undefined) {
+      updateFields.push('navigation_link_1 = ?');
+      updateValues.push(navigation_link_1);
+    }
+    if (navigation_banner_2 !== undefined) {
+      updateFields.push('navigation_banner_2 = ?');
+      updateValues.push(navigation_banner_2);
+    }
+    if (navigation_link_2 !== undefined) {
+      updateFields.push('navigation_link_2 = ?');
+      updateValues.push(navigation_link_2);
+    }
+    if (navigation_banner_3 !== undefined) {
+      updateFields.push('navigation_banner_3 = ?');
+      updateValues.push(navigation_banner_3);
+    }
+    if (navigation_link_3 !== undefined) {
+      updateFields.push('navigation_link_3 = ?');
+      updateValues.push(navigation_link_3);
+    }
+    if (navigation_banner_4 !== undefined) {
+      updateFields.push('navigation_banner_4 = ?');
+      updateValues.push(navigation_banner_4);
+    }
+    if (navigation_link_4 !== undefined) {
+      updateFields.push('navigation_link_4 = ?');
+      updateValues.push(navigation_link_4);
+    }
+    if (background_image !== undefined) {
+      updateFields.push('background_image = ?');
+      updateValues.push(background_image);
+    }
+    if (footer_image !== undefined) {
+      updateFields.push('footer_image = ?');
+      updateValues.push(footer_image);
+    }
+    if (load_logo !== undefined) {
+      updateFields.push('load_logo = ?');
+      updateValues.push(load_logo);
+    }
+    if (footer_logo !== undefined) {
+      updateFields.push('footer_logo = ?');
+      updateValues.push(footer_logo);
+    }
+    if (ad_banner !== undefined) {
+      updateFields.push('ad_banner = ?');
+      updateValues.push(ad_banner);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่มีข้อมูลที่จะอัปเดต'
+      });
+    }
+
+    updateValues.push(customerId);
+
+    const updateQuery = `UPDATE config SET ${updateFields.join(', ')} WHERE customer_id = ?`;
+    await pool.execute(updateQuery, updateValues);
+
+    // ดึงข้อมูลที่อัปเดตแล้ว
+    const [updatedConfigs] = await pool.execute(
+      `SELECT banner_link, banner2_link, banner3_link, 
+              navigation_banner_1, navigation_link_1,
+              navigation_banner_2, navigation_link_2,
+              navigation_banner_3, navigation_link_3,
+              navigation_banner_4, navigation_link_4,
+              background_image, footer_image, load_logo, footer_logo, ad_banner
+       FROM config WHERE customer_id = ? LIMIT 1`,
+      [customerId]
+    );
+
+    res.json({
+      success: true,
+      message: 'อัปเดตการตั้งค่าแบนเนอร์สำเร็จ',
+      data: {
+        banner_link: updatedConfigs[0].banner_link,
+        banner2_link: updatedConfigs[0].banner2_link,
+        banner3_link: updatedConfigs[0].banner3_link,
+        navigation_banner_1: updatedConfigs[0].navigation_banner_1,
+        navigation_link_1: updatedConfigs[0].navigation_link_1,
+        navigation_banner_2: updatedConfigs[0].navigation_banner_2,
+        navigation_link_2: updatedConfigs[0].navigation_link_2,
+        navigation_banner_3: updatedConfigs[0].navigation_banner_3,
+        navigation_link_3: updatedConfigs[0].navigation_link_3,
+        navigation_banner_4: updatedConfigs[0].navigation_banner_4,
+        navigation_link_4: updatedConfigs[0].navigation_link_4,
+        background_image: updatedConfigs[0].background_image,
+        footer_image: updatedConfigs[0].footer_image,
+        load_logo: updatedConfigs[0].load_logo,
+        footer_logo: updatedConfigs[0].footer_logo,
+        ad_banner: updatedConfigs[0].ad_banner
+      }
+    });
+
+  } catch (error) {
+    console.error('Error updating banner config:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการอัปเดตการตั้งค่าแบนเนอร์',
+      error: error.message
+    });
+  }
+});
+
+// ==================== PROMPTPAY QR CODE SYSTEM ====================
+
+// สร้าง PromptPay QR Code
+app.post("/api/promptpay-qr", authenticateToken, async (req, res) => {
+  try {
+    const { amount } = req.body;
+    const userId = req.user.id;
+    const customerId = req.customer_id;
+
+    // ตรวจสอบ customer_id
+    if (!customerId) {
+      return res.status(400).json({
+        error: "ไม่พบข้อมูล customer_id"
+      });
+    }
+
+    // ดึงข้อมูล PromptPay จาก config
+    const [configs] = await pool.execute(
+      'SELECT promptpay_number, promptpay_name FROM config WHERE customer_id = ?',
+      [customerId]
+    );
+
+    if (configs.length === 0 || !configs[0].promptpay_number) {
+      return res.status(404).json({
+        error: "ไม่พบการตั้งค่า PromptPay หรือหมายเลข PromptPay ยังไม่ได้ตั้งค่า"
+      });
+    }
+
+    const config = configs[0];
+    const promptpayNumber = config.promptpay_number;
+
+    // ตรวจสอบจำนวนเงิน
+    if (!amount || typeof amount !== 'number' || amount <= 0) {
+      return res.status(400).json({
+        error: "กรุณาระบุจำนวนเงินที่ถูกต้อง (ต้องเป็นตัวเลขที่มากกว่า 0)"
+      });
+    }
+
+    const qrAmount = amount;
+
+    // ลบ QR Code เก่าของผู้ใช้ก่อนสร้างใหม่ (ถ้ามี QR Code ที่ยังไม่ได้ใช้)
+    await pool.query(
+      "DELETE FROM promptpay_qr_code WHERE customer_id = ? AND user_id = ?",
+      [customerId, userId]
+    );
+
+    // สร้าง PromptPay QR Code
+    const qrData = await generatePromptPayQR(promptpayNumber, qrAmount);
+
+    // บันทึกลงฐานข้อมูล
+    const [result] = await pool.query(
+      "INSERT INTO promptpay_qr_code (customer_id, user_id, phone_number, amount, qr_payload) VALUES (?, ?, ?, ?, ?)",
+      [customerId, userId, promptpayNumber, qrAmount, qrData.payload]
+    );
+
+    const qrCodeData = {
+      id: result.insertId,
+      customer_id: customerId,
+      user_id: userId,
+      phone_number: promptpayNumber,
+      promptpay_name: config.promptpay_name,
+      amount: qrAmount,
+      qr_payload: qrData.payload,
+      qr_image: qrData.qrCodeImage,
+      created_at: new Date().toISOString()
+    };
+
+    res.status(201).json({
+      message: "สร้าง PromptPay QR Code สำเร็จ",
+      data: qrCodeData
+    });
+
+  } catch (err) {
+    console.error("PromptPay QR creation error:", err);
+    res.status(500).json({ error: "เกิดข้อผิดพลาดในการสร้าง QR Code" });
+  }
+});
+
+// ดึงค่า amount ทั้งหมดจากตาราง promptpay_qr_code
+app.get("/api/promptpay-amounts", authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        error: "ไม่พบข้อมูล customer_id"
+      });
+    }
+
+    const [rows] = await pool.query(
+      "SELECT amount FROM promptpay_qr_code WHERE customer_id = ?",
+      [customerId]
+    );
+
+    const amounts = rows.map(row => row.amount);
+
+    res.status(200).json({
+      message: "ดึงค่า amount ทั้งหมดสำเร็จ",
+      data: amounts
+    });
+
+  } catch (err) {
+    console.error("Get amounts error:", err);
+    res.status(500).json({ error: "เกิดข้อผิดพลาดในการดึงข้อมูล amount" });
+  }
+});
+
+// Webhook สำหรับรับข้อมูลการเติมเงินจากระบบภายนอก
+app.post("/api/webhook/promptpay-payment", express.json(), async (req, res) => {
+  try {
+    // Debug: ดูข้อมูลที่เข้ามา
+    console.log("Webhook received:", {
+      body: req.body,
+      bodyType: typeof req.body,
+      headers: req.headers,
+      method: req.method
+    });
+
+    // ตรวจสอบว่า req.body มีข้อมูลหรือไม่
+    if (!req.body) {
+      return res.status(400).json({
+        error: "ไม่พบข้อมูลใน request body"
+      });
+    }
+
+    const { amount, customer_id } = req.body;
+
+    // ตรวจสอบข้อมูลที่จำเป็น
+    if (!amount) {
+      return res.status(400).json({
+        error: "กรุณาระบุจำนวนเงิน"
+      });
+    }
+
+    if (!customer_id) {
+      return res.status(400).json({
+        error: "กรุณาระบุ customer_id"
+      });
+    }
+
+    // แปลง amount เป็นตัวเลข
+    const numericAmount = parseFloat(amount);
+
+    // ตรวจสอบรูปแบบจำนวนเงิน
+    if (isNaN(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({
+        error: "จำนวนเงินต้องเป็นตัวเลขที่มากกว่า 0"
+      });
+    }
+
+    // ค้นหา QR Code ที่มี amount และ customer_id ตรงกัน
+    const [qrCodes] = await pool.query(
+      "SELECT id, customer_id, user_id, amount, phone_number FROM promptpay_qr_code WHERE customer_id = ? AND amount = ? ORDER BY created_at ASC",
+      [customer_id, numericAmount]
+    );
+
+    if (qrCodes.length === 0) {
+      return res.status(404).json({
+        error: "ไม่พบ QR Code ที่ตรงกับจำนวนเงินและ customer_id ที่ระบุ",
+        amount: numericAmount,
+        customer_id: customer_id
+      });
+    }
+
+    // ถ้ามีหลาย QR Code ที่ amount ตรงกัน ให้ใช้ตัวแรก
+    const qrCode = qrCodes[0];
+    const userId = qrCode.user_id;
+
+    // เริ่ม transaction เพื่อให้การอัปเดตข้อมูลเป็นไปอย่างปลอดภัย
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    let topupResult;
+
+    try {
+      // อัปเดตยอดเงินของผู้ใช้ทันที
+      const [updateResult] = await connection.query(
+        "UPDATE users SET money = money + ? WHERE id = ? AND customer_id = ?",
+        [numericAmount, userId, customer_id]
+      );
+
+      if (updateResult.affectedRows === 0) {
+        await connection.rollback();
+        connection.release();
+        return res.status(404).json({
+          error: "ไม่พบผู้ใช้ที่ระบุ"
+        });
+      }
+
+      // บันทึกลงตาราง topups
+      [topupResult] = await connection.query(
+        'INSERT INTO topups (customer_id, user_id, amount, method, transaction_ref, status) VALUES (?, ?, ?, ?, ?, ?)',
+        [customer_id, userId, numericAmount, 'promptpay', `QR_${qrCode.id}`, 'success']
+      );
+
+      // ลบ QR Code ที่ใช้แล้ว
+      await connection.query(
+        "DELETE FROM promptpay_qr_code WHERE id = ? AND customer_id = ?",
+        [qrCode.id, customer_id]
+      );
+
+      await connection.commit();
+      connection.release();
+
+    } catch (error) {
+      await connection.rollback();
+      connection.release();
+      throw error;
+    }
+
+    // ดึงข้อมูลผู้ใช้หลังอัปเดต
+    const [userResult] = await pool.query(
+      "SELECT id, fullname, email, money FROM users WHERE id = ? AND customer_id = ?",
+      [userId, customer_id]
+    );
+
+    console.log(`Webhook processed successfully for user ${userId}, amount: ${numericAmount}`);
+
+    res.status(200).json({
+      message: "Webhook ประมวลผลสำเร็จ",
+      success: true,
+      data: {
+        user: userResult[0],
+        amount_added: numericAmount,
+        qr_code_id: qrCode.id,
+        topup_id: topupResult.insertId,
+        method: 'promptpay'
+      }
+    });
+
+  } catch (err) {
+    console.error("Webhook processing error:", err);
+    console.error("Error details:", {
+      message: err.message,
+      stack: err.stack,
+      body: req.body,
+      headers: req.headers
+    });
+
+    res.status(500).json({
+      error: "เกิดข้อผิดพลาดในการประมวลผล webhook",
+      success: false,
+      details: err.message
+    });
+  }
+});
+
+// ดึงรายการ PromptPay QR Code ของผู้ใช้
+app.get("/api/promptpay-qr", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const customerId = req.customer_id;
+    const { page = 1, limit = 10 } = req.query;
+
+    if (!customerId) {
+      return res.status(400).json({
+        error: "ไม่พบข้อมูล customer_id"
+      });
+    }
+
+    const offset = (page - 1) * limit;
+
+    // ดึงข้อมูล QR Code ของผู้ใช้
+    const [qrCodes] = await pool.query(
+      `SELECT id, customer_id, user_id, phone_number, amount, qr_payload, created_at 
+       FROM promptpay_qr_code 
+       WHERE customer_id = ? AND user_id = ? 
+       ORDER BY created_at DESC 
+       LIMIT ? OFFSET ?`,
+      [customerId, userId, parseInt(limit), parseInt(offset)]
+    );
+
+    // นับจำนวนทั้งหมด
+    const [countResult] = await pool.query(
+      "SELECT COUNT(*) as total FROM promptpay_qr_code WHERE customer_id = ? AND user_id = ?",
+      [customerId, userId]
+    );
+
+    const total = countResult[0].total;
+    const totalPages = Math.ceil(total / limit);
+
+    res.json({
+      message: "ดึงข้อมูล PromptPay QR Code สำเร็จ",
+      data: qrCodes,
+      pagination: {
+        current_page: parseInt(page),
+        total_pages: totalPages,
+        total_items: total,
+        items_per_page: parseInt(limit)
+      }
+    });
+
+  } catch (err) {
+    console.error("PromptPay QR fetch error:", err);
+    res.status(500).json({ error: "เกิดข้อผิดพลาดในการดึงข้อมูล QR Code" });
+  }
+});
+
+// ดึง PromptPay QR Code ตาม ID
+app.get("/api/promptpay-qr/:id", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        error: "ไม่พบข้อมูล customer_id"
+      });
+    }
+
+    const [qrCodes] = await pool.query(
+      "SELECT id, customer_id, user_id, phone_number, amount, qr_payload, created_at FROM promptpay_qr_code WHERE id = ? AND customer_id = ? AND user_id = ?",
+      [id, customerId, userId]
+    );
+
+    if (qrCodes.length === 0) {
+      return res.status(404).json({ error: "ไม่พบ QR Code ที่ระบุ" });
+    }
+
+    res.json({
+      message: "ดึงข้อมูล PromptPay QR Code สำเร็จ",
+      data: qrCodes[0]
+    });
+
+  } catch (err) {
+    console.error("PromptPay QR fetch by ID error:", err);
+    res.status(500).json({ error: "เกิดข้อผิดพลาดในการดึงข้อมูล QR Code" });
+  }
+});
+
+// ยืนยันการเติมเงิน PromptPay
+app.get("/api/promptpay-confirm/:amount", async (req, res) => {
+  try {
+    const { amount } = req.params;
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        error: "ไม่พบข้อมูล customer_id"
+      });
+    }
+
+    // ตรวจสอบข้อมูลที่จำเป็น
+    if (!amount) {
+      return res.status(400).json({
+        error: "กรุณาระบุจำนวนเงินที่เติม"
+      });
+    }
+
+    // แปลง amount เป็นตัวเลข
+    const numericAmount = parseFloat(amount);
+
+    // ตรวจสอบรูปแบบจำนวนเงิน
+    if (isNaN(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({
+        error: "จำนวนเงินต้องเป็นตัวเลขที่มากกว่า 0"
+      });
+    }
+
+    // ค้นหา QR Code ที่มี amount และ customer_id ตรงกัน
+    const [qrCodes] = await pool.query(
+      "SELECT id, customer_id, user_id, amount, phone_number FROM promptpay_qr_code WHERE customer_id = ? AND amount = ?",
+      [customerId, numericAmount]
+    );
+
+    if (qrCodes.length === 0) {
+      return res.status(404).json({
+        error: "ไม่พบ QR Code ที่ตรงกับจำนวนเงินที่ระบุ"
+      });
+    }
+
+    // ถ้ามีหลาย QR Code ที่ amount ตรงกัน ให้ใช้ตัวแรก
+    const qrCode = qrCodes[0];
+    const userId = qrCode.user_id;
+
+    // เริ่ม transaction
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // อัปเดตยอดเงินของผู้ใช้
+      const [updateResult] = await connection.query(
+        "UPDATE users SET money = money + ? WHERE id = ? AND customer_id = ?",
+        [numericAmount, userId, customerId]
+      );
+
+      if (updateResult.affectedRows === 0) {
+        throw new Error("ไม่พบผู้ใช้ที่ระบุ");
+      }
+
+      // ลบ QR Code ที่ใช้แล้ว
+      await connection.query(
+        "DELETE FROM promptpay_qr_code WHERE id = ? AND customer_id = ?",
+        [qrCode.id, customerId]
+      );
+
+      // บันทึกประวัติการเติมเงิน
+      await connection.query(
+        "INSERT INTO topups (customer_id, user_id, amount, method, transaction_ref, status) VALUES (?, ?, ?, 'PromptPay', ?, 'success')",
+        [customerId, userId, numericAmount, `QR-${qrCode.id}`]
+      );
+
+      // commit transaction
+      await connection.commit();
+      connection.release();
+
+      // ดึงข้อมูลผู้ใช้หลังอัปเดต
+      const [userResult] = await pool.query(
+        "SELECT id, fullname, email, money FROM users WHERE id = ? AND customer_id = ?",
+        [userId, customerId]
+      );
+
+      res.status(200).json({
+        message: "ยืนยันการเติมเงินสำเร็จ",
+        data: {
+          user: userResult[0],
+          amount_added: numericAmount,
+          qr_code_id: qrCode.id
+        }
+      });
+
+    } catch (transactionErr) {
+      // rollback transaction
+      await connection.rollback();
+      connection.release();
+      throw transactionErr;
+    }
+
+  } catch (err) {
+    console.error("PromptPay confirm error:", err);
+    res.status(500).json({ error: "เกิดข้อผิดพลาดในการยืนยันการเติมเงิน" });
+  }
+});
+
+// ลบ PromptPay QR Code
+app.delete("/api/promptpay-qr/:id", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        error: "ไม่พบข้อมูล customer_id"
+      });
+    }
+
+    // ตรวจสอบว่า QR Code เป็นของผู้ใช้หรือไม่
+    const [existingQr] = await pool.query(
+      "SELECT id FROM promptpay_qr_code WHERE id = ? AND customer_id = ? AND user_id = ?",
+      [id, customerId, userId]
+    );
+
+    if (existingQr.length === 0) {
+      return res.status(404).json({ error: "ไม่พบ QR Code ที่ระบุ" });
+    }
+
+    // ลบ QR Code
+    await pool.query(
+      "DELETE FROM promptpay_qr_code WHERE id = ? AND customer_id = ? AND user_id = ?",
+      [id, customerId, userId]
+    );
+
+    res.json({
+      message: "ลบ PromptPay QR Code สำเร็จ"
+    });
+
+  } catch (err) {
+    console.error("PromptPay QR deletion error:", err);
+    res.status(500).json({ error: "เกิดข้อผิดพลาดในการลบ QR Code" });
   }
 });
 
