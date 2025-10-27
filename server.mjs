@@ -5,6 +5,7 @@ import bcrypt from 'bcryptjs';
 import cors from 'cors';
 import axios from 'axios';
 import QRCode from 'qrcode';
+import crypto from 'crypto';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -15,6 +16,29 @@ const PORT = process.env.PORT || 3001;
 
 // JWT Secret Key
 const JWT_SECRET = '32670cc39ca9333bedb30406cc22c4bc';
+
+// Encryption Key for Web Config (32 bytes for AES-256)
+const ENCRYPTION_KEY = crypto.createHash('sha256').update('web-config-encryption-key-2025').digest();
+const ENCRYPTION_IV_LENGTH = 16; // For AES, this is always 16
+
+// Encryption functions
+function encryptData(text) {
+  const iv = crypto.randomBytes(ENCRYPTION_IV_LENGTH);
+  const cipher = crypto.createCipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
+  let encrypted = cipher.update(JSON.stringify(text), 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  return iv.toString('hex') + ':' + encrypted;
+}
+
+function decryptData(text) {
+  const parts = text.split(':');
+  const iv = Buffer.from(parts.shift(), 'hex');
+  const encryptedText = parts.join(':');
+  const decipher = crypto.createDecipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
+  let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
+  decrypted += decipher.final('utf8');
+  return JSON.parse(decrypted);
+}
 
 // Database configuration
 const dbConfig = {
@@ -732,57 +756,64 @@ app.get('/get-web-config', async (req, res) => {
 
     const config = configs[0];
 
+    // Prepare config object
+    const configData = {
+      id: config.id,
+      owner_phone: config.owner_phone,
+      site_name: config.site_name,
+      site_logo: config.site_logo,
+      meta_title: config.meta_title,
+      meta_description: config.meta_description,
+      meta_keywords: config.meta_keywords,
+      meta_author: config.meta_author,
+      discord_link: config.discord_link,
+      discord_webhook: config.discord_webhook,
+      banner_link: config.banner_link,
+      banner2_link: config.banner2_link,
+      banner3_link: config.banner3_link,
+      navigation_banner_1: config.navigation_banner_1,
+      navigation_link_1: config.navigation_link_1,
+      navigation_banner_2: config.navigation_banner_2,
+      navigation_link_2: config.navigation_link_2,
+      navigation_banner_3: config.navigation_banner_3,
+      navigation_link_3: config.navigation_link_3,
+      navigation_banner_4: config.navigation_banner_4,
+      navigation_link_4: config.navigation_link_4,
+      background_image: config.background_image,
+      footer_image: config.footer_image,
+      load_logo: config.load_logo,
+      footer_logo: config.footer_logo,
+      theme: config.theme,
+      ad_banner: config.ad_banner,
+      font_select: config.font_select,
+      // Bank account fields
+      bank_account_name: config.bank_account_name,
+      bank_account_number: config.bank_account_number,
+      bank_account_name_thai: config.bank_account_name_thai,
+      bank_name: config.bank_name,
+      // PromptPay configuration fields
+      promptpay_number: config.promptpay_number,
+      promptpay_name: config.promptpay_name,
+      line_cookie: config.line_cookie,
+      line_mac: config.line_mac,
+      verify_token: config.verify_token,
+      last_check: config.last_check,
+      auto_verify_enabled: config.auto_verify_enabled,
+      review: config.review,
+      transac: config.transac,
+      annouce_status: config.annouce_status,
+      created_at: config.created_at,
+      updated_at: config.updated_at
+    };
+
+    // Encrypt the config data
+    const encryptedConfig = encryptData(configData);
+
     res.json({
       success: true,
-      message: 'Web config retrieved successfully',
-      config: {
-        id: config.id,
-        owner_phone: config.owner_phone,
-        site_name: config.site_name,
-        site_logo: config.site_logo,
-        meta_title: config.meta_title,
-        meta_description: config.meta_description,
-        meta_keywords: config.meta_keywords,
-        meta_author: config.meta_author,
-        discord_link: config.discord_link,
-        discord_webhook: config.discord_webhook,
-        banner_link: config.banner_link,
-        banner2_link: config.banner2_link,
-        banner3_link: config.banner3_link,
-        navigation_banner_1: config.navigation_banner_1,
-        navigation_link_1: config.navigation_link_1,
-        navigation_banner_2: config.navigation_banner_2,
-        navigation_link_2: config.navigation_link_2,
-        navigation_banner_3: config.navigation_banner_3,
-        navigation_link_3: config.navigation_link_3,
-        navigation_banner_4: config.navigation_banner_4,
-        navigation_link_4: config.navigation_link_4,
-        background_image: config.background_image,
-        footer_image: config.footer_image,
-        load_logo: config.load_logo,
-        footer_logo: config.footer_logo,
-        theme: config.theme,
-        ad_banner: config.ad_banner,
-        font_select: config.font_select,
-        // Bank account fields
-        bank_account_name: config.bank_account_name,
-        bank_account_number: config.bank_account_number,
-        bank_account_name_thai: config.bank_account_name_thai,
-        bank_name: config.bank_name,
-        // PromptPay configuration fields
-        promptpay_number: config.promptpay_number,
-        promptpay_name: config.promptpay_name,
-        line_cookie: config.line_cookie,
-        line_mac: config.line_mac,
-        verify_token: config.verify_token,
-        last_check: config.last_check,
-        auto_verify_enabled: config.auto_verify_enabled,
-        review: config.review,
-        transac: config.transac,
-        annouce_status: config.annouce_status,
-        created_at: config.created_at,
-        updated_at: config.updated_at
-      }
+      message: 'Web config retrieved successfully (encrypted)',
+      encrypted: true,
+      data: encryptedConfig
     });
 
   } catch (error) {
@@ -790,6 +821,37 @@ app.get('/get-web-config', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Decrypt web config endpoint for frontend
+app.post('/decrypt-web-config', async (req, res) => {
+  try {
+    const { data } = req.body;
+
+    if (!data) {
+      return res.status(400).json({
+        success: false,
+        message: 'Encrypted data is required'
+      });
+    }
+
+    // Decrypt the data
+    const decryptedConfig = decryptData(data);
+
+    res.json({
+      success: true,
+      message: 'Web config decrypted successfully',
+      config: decryptedConfig
+    });
+
+  } catch (error) {
+    console.error('Decrypt web config error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to decrypt data',
       error: error.message
     });
   }
