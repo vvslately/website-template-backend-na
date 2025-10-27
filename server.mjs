@@ -3502,6 +3502,95 @@ app.post('/admin/products', authenticateToken, requirePermission('can_edit_produ
   }
 });
 
+// Duplicate product endpoint
+app.post('/admin/products/:productId/duplicate', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const { productId } = req.params;
+
+    // Validate product ID
+    if (!productId || isNaN(productId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid product ID is required'
+      });
+    }
+
+    // Get the original product
+    const [products] = await pool.execute(
+      `SELECT 
+        category_id, title, subtitle, price, reseller_price, 
+        stock, duration, image, download_link, isSpecial, featured, 
+        isWarrenty, warrenty_text, primary_color, secondary_color, 
+        priority, discount_percent
+      FROM products 
+      WHERE id = ? AND customer_id = ?`,
+      [productId, req.customer_id]
+    );
+
+    if (products.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+
+    const originalProduct = products[0];
+
+    // Create a new title for the duplicated product
+    const newTitle = `Copy of ${originalProduct.title}`;
+
+    // Insert the duplicated product
+    const [result] = await pool.execute(
+      `INSERT INTO products (
+        customer_id, category_id, title, subtitle, price, reseller_price, 
+        stock, duration, image, download_link, isSpecial, featured, 
+        isWarrenty, warrenty_text, primary_color, secondary_color, 
+        priority, discount_percent
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        req.customer_id,
+        originalProduct.category_id,
+        newTitle,
+        originalProduct.subtitle,
+        originalProduct.price,
+        originalProduct.reseller_price,
+        originalProduct.stock,
+        originalProduct.duration,
+        originalProduct.image,
+        originalProduct.download_link,
+        originalProduct.isSpecial,
+        originalProduct.featured,
+        originalProduct.isWarrenty,
+        originalProduct.warrenty_text,
+        originalProduct.primary_color,
+        originalProduct.secondary_color,
+        originalProduct.priority,
+        originalProduct.discount_percent
+      ]
+    );
+
+    // Get the newly created product
+    const [newProduct] = await pool.execute(
+      'SELECT * FROM products WHERE id = ?',
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Product duplicated successfully',
+      product: newProduct[0]
+    });
+
+  } catch (error) {
+    console.error('Duplicate product error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
 // Update product endpoint
 app.put('/admin/products/:productId', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
   try {
