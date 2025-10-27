@@ -2349,7 +2349,7 @@ app.get('/my-transactions', authenticateToken, async (req, res) => {
         t.id, t.bill_number, t.total_price, t.created_at,
         ti.id as item_id, ti.product_id, ti.quantity, ti.price as item_price,
         ti.license_id, ps.license_key,
-        p.title as product_title, p.image as product_image
+        p.title as product_title, p.image as product_image, p.download_link as product_download_link
       FROM transactions t
       LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
       LEFT JOIN product_stock ps ON ti.license_id = ps.id
@@ -2379,6 +2379,7 @@ app.get('/my-transactions', authenticateToken, async (req, res) => {
           product_id: row.product_id,
           product_title: row.product_title,
           product_image: row.product_image,
+          download_link: row.product_download_link,
           quantity: row.quantity,
           price: row.item_price,
           license_key: row.license_key
