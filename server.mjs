@@ -529,6 +529,85 @@ app.get('/my-profile', authenticateToken, async (req, res) => {
   }
 });
 
+// Change password endpoint
+app.put('/change-password', authenticateToken, async (req, res) => {
+  try {
+    const { oldPassword, newPassword } = req.body;
+    
+    // Validate input
+    if (!oldPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'กรุณาระบุรหัสผ่านเก่าและรหัสผ่านใหม่'
+      });
+    }
+    
+    // Check password requirements
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'รหัสผ่านใหม่ต้องมีอย่างน้อย 6 ตัวอักษร'
+      });
+    }
+    
+    // Check if customer_id matches token
+    if (req.user.customer_id !== req.customer_id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied - customer mismatch'
+      });
+    }
+    
+    // Get current user data with password
+    const [users] = await pool.execute(
+      'SELECT id, password FROM users WHERE id = ? AND customer_id = ?',
+      [req.user.id, req.customer_id]
+    );
+    
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบผู้ใช้งาน'
+      });
+    }
+    
+    const user = users[0];
+    
+    // Verify old password
+    const isValidPassword = await bcrypt.compare(oldPassword, user.password);
+    
+    if (!isValidPassword) {
+      return res.status(401).json({
+        success: false,
+        message: 'รหัสผ่านเก่าไม่ถูกต้อง'
+      });
+    }
+    
+    // Hash new password
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+    
+    // Update password
+    await pool.execute(
+      'UPDATE users SET password = ? WHERE id = ? AND customer_id = ?',
+      [hashedPassword, req.user.id, req.customer_id]
+    );
+    
+    res.json({
+      success: true,
+      message: 'เปลี่ยนรหัสผ่านสำเร็จ'
+    });
+    
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดภายในระบบ',
+      error: error.message
+    });
+  }
+});
+
 // Logout endpoint (client-side token removal)
 app.post('/logout', authenticateToken, (req, res) => {
   res.json({
@@ -1243,6 +1322,21 @@ app.get('/categories', async (req, res) => {
       [req.customer_id]
     );
 
+    // Get product counts for each category
+    const [productCounts] = await pool.execute(
+      `SELECT category_id, COUNT(*) as product_count 
+       FROM products 
+       WHERE customer_id = ? AND isActive = 1 
+       GROUP BY category_id`,
+      [req.customer_id]
+    );
+
+    // Create a map of category_id -> product_count
+    const productCountMap = new Map();
+    productCounts.forEach(row => {
+      productCountMap.set(row.category_id, row.product_count);
+    });
+
     // Build hierarchical structure
     const categoryMap = new Map();
     const rootCategories = [];
@@ -1251,11 +1345,13 @@ app.get('/categories', async (req, res) => {
     categories.forEach(category => {
       categoryMap.set(category.id, {
         ...category,
-        children: []
+        children: [],
+        product_count: productCountMap.get(category.id) || 0,
+        subcategory_count: 0
       });
     });
 
-    // Second pass: build hierarchy
+    // Second pass: build hierarchy and count subcategories
     categories.forEach(category => {
       const categoryObj = categoryMap.get(category.id);
 
@@ -1267,6 +1363,7 @@ app.get('/categories', async (req, res) => {
         const parent = categoryMap.get(category.parent_id);
         if (parent) {
           parent.children.push(categoryObj);
+          parent.subcategory_count++;
         }
       }
     });
@@ -9280,14 +9377,46 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       });
     }
 
-    const { ref, amount, receiver_name, receiver_id } = slipData.data;
+    const { ref, amount, receiver_name, receiver_id, date, timestamp } = slipData.data;
 
     console.log('Slip data extracted:', {
       ref,
       amount,
       receiver_name,
-      receiver_id
+      receiver_id,
+      date,
+      timestamp
     });
+
+    // Check if slip is older than 15 minutes
+    let slipTime;
+    if (timestamp) {
+      slipTime = new Date(timestamp);
+    } else if (date) {
+      slipTime = new Date(date);
+    }
+
+    if (slipTime && !isNaN(slipTime.getTime())) {
+      const currentTime = new Date();
+      const timeDifferenceMinutes = (currentTime - slipTime) / (1000 * 60);
+      
+      console.log('Time validation:', {
+        slipTime: slipTime.toISOString(),
+        currentTime: currentTime.toISOString(),
+        differenceMinutes: timeDifferenceMinutes
+      });
+
+      if (timeDifferenceMinutes > 15) {
+        return res.status(400).json({
+          success: false,
+          message: 'สลิปนี้เกินกำหนดเวลา (เกิน 15 นาที)',
+          slip_time: slipTime.toISOString(),
+          time_difference_minutes: Math.floor(timeDifferenceMinutes)
+        });
+      }
+    } else {
+      console.log('Warning: Could not extract timestamp from slip data');
+    }
 
     // Check if transaction_ref already exists in topups
     const [existingTopup] = await pool.execute(
