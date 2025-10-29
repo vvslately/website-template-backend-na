@@ -742,6 +742,7 @@ app.get('/get-web-config', async (req, res) => {
        bank_account_name, bank_account_number, bank_account_name_thai, bank_name,
        promptpay_number, promptpay_name, 
        line_cookie, line_mac, verify_token, last_check, auto_verify_enabled, review, transac, annouce_status,
+       user_card, topup_card, stock_card, sell_card,
        created_at, updated_at 
        FROM config WHERE customer_id = ? ORDER BY id LIMIT 1`,
       [req.customer_id]
@@ -802,6 +803,10 @@ app.get('/get-web-config', async (req, res) => {
       review: config.review,
       transac: config.transac,
       annouce_status: config.annouce_status,
+      user_card: config.user_card,
+      topup_card: config.topup_card,
+      stock_card: config.stock_card,
+      sell_card: config.sell_card,
       created_at: config.created_at,
       updated_at: config.updated_at
     };
@@ -909,7 +914,11 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       auto_verify_enabled,
       review,
       transac,
-      annouce_status  // ✅ เพิ่มบรรทัดนี้
+      annouce_status,  // ✅ เพิ่มบรรทัดนี้
+      user_card,
+      topup_card,
+      stock_card,
+      sell_card
     } = req.body;
 
     // Check if config exists for this customer
@@ -1090,6 +1099,22 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateFields.push('annouce_status = ?');
       updateValues.push(annouce_status ? 1 : 0);
     }
+    if (user_card !== undefined) {
+      updateFields.push('user_card = ?');
+      updateValues.push(user_card ? 1 : 0);
+    }
+    if (topup_card !== undefined) {
+      updateFields.push('topup_card = ?');
+      updateValues.push(topup_card ? 1 : 0);
+    }
+    if (stock_card !== undefined) {
+      updateFields.push('stock_card = ?');
+      updateValues.push(stock_card ? 1 : 0);
+    }
+    if (sell_card !== undefined) {
+      updateFields.push('sell_card = ?');
+      updateValues.push(sell_card ? 1 : 0);
+    }
 
     if (updateFields.length === 0) {
       return res.status(400).json({
@@ -1125,6 +1150,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
        bank_account_name, bank_account_number, bank_account_name_thai,
        promptpay_number, promptpay_name, 
        line_cookie, line_mac, verify_token, last_check, auto_verify_enabled, review, transac, annouce_status,
+       user_card, topup_card, stock_card, sell_card,
        created_at, updated_at 
        FROM config WHERE customer_id = ?`,
       [req.customer_id]
@@ -1179,6 +1205,10 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
         review: updatedConfig.review,
         transac: updatedConfig.transac,
         annouce_status: updatedConfig.annouce_status,  // ✅ เพิ่มบรรทัดนี้
+        user_card: updatedConfig.user_card,
+        topup_card: updatedConfig.topup_card,
+        stock_card: updatedConfig.stock_card,
+        sell_card: updatedConfig.sell_card,
         created_at: updatedConfig.created_at,
         updated_at: updatedConfig.updated_at
       }
@@ -1193,6 +1223,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
     });
   }
 });
+
 
 
 // Get categories endpoint (hierarchical structure)
@@ -9724,6 +9755,295 @@ app.delete('/api/admin/contacts/:id', authenticateToken, requirePermission('can_
     res.status(500).json({
       success: false,
       message: 'เกิดข้อผิดพลาดในการลบช่องทางติดต่อ',
+      error: error.message
+    });
+  }
+});
+
+// ==================== ADBANNER SYSTEM ====================
+
+// ดึงรายการ adbanner ทั้งหมด (Public - สำหรับแสดงในหน้าหลัก)
+app.get('/api/adbanner', async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูล customer_id'
+      });
+    }
+
+    const [adbanners] = await pool.execute(
+      `SELECT id, ad_img, description, created_at
+       FROM adbanner 
+       WHERE customer_id = ?
+       ORDER BY created_at DESC`,
+      [customerId]
+    );
+
+    res.json({
+      success: true,
+      message: 'ดึงข้อมูล adbanner สำเร็จ',
+      data: adbanners
+    });
+
+  } catch (error) {
+    console.error('Error fetching adbanners:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงข้อมูล',
+      error: error.message
+    });
+  }
+});
+
+// ดึงรายการ adbanner ทั้งหมด (สำหรับ Admin)
+app.get('/api/admin/adbanner', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูล customer_id'
+      });
+    }
+
+    const [adbanners] = await pool.execute(
+      `SELECT * FROM adbanner 
+       WHERE customer_id = ?
+       ORDER BY created_at DESC`,
+      [customerId]
+    );
+
+    res.json({
+      success: true,
+      message: 'ดึงข้อมูล adbanner สำเร็จ',
+      data: adbanners
+    });
+
+  } catch (error) {
+    console.error('Error fetching adbanners:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงข้อมูล',
+      error: error.message
+    });
+  }
+});
+
+// สร้าง adbanner ใหม่ (Admin only)
+app.post('/api/admin/adbanner', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    const { ad_img, description } = req.body;
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูล customer_id'
+      });
+    }
+
+    // ตรวจสอบข้อมูลที่จำเป็น
+    if (!ad_img) {
+      return res.status(400).json({
+        success: false,
+        message: 'กรุณากรอก URL รูปภาพโฆษณา'
+      });
+    }
+
+    // บันทึกลงฐานข้อมูล
+    const [result] = await pool.execute(
+      `INSERT INTO adbanner (customer_id, ad_img, description) 
+       VALUES (?, ?, ?)`,
+      [
+        customerId,
+        ad_img,
+        description || null
+      ]
+    );
+
+    // ดึงข้อมูลที่สร้างแล้ว
+    const [newAdbanner] = await pool.execute(
+      'SELECT * FROM adbanner WHERE id = ?',
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'สร้าง adbanner สำเร็จ',
+      data: newAdbanner[0]
+    });
+
+  } catch (error) {
+    console.error('Error creating adbanner:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการสร้าง adbanner',
+      error: error.message
+    });
+  }
+});
+
+// ดึง adbanner ตาม ID
+app.get('/api/admin/adbanner/:id', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูล customer_id'
+      });
+    }
+
+    const [adbanners] = await pool.execute(
+      'SELECT * FROM adbanner WHERE id = ? AND customer_id = ?',
+      [id, customerId]
+    );
+
+    if (adbanners.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบ adbanner ที่ระบุ'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'ดึงข้อมูล adbanner สำเร็จ',
+      data: adbanners[0]
+    });
+
+  } catch (error) {
+    console.error('Error fetching adbanner:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงข้อมูล',
+      error: error.message
+    });
+  }
+});
+
+// อัปเดต adbanner (Admin only)
+app.put('/api/admin/adbanner/:id', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { ad_img, description } = req.body;
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูล customer_id'
+      });
+    }
+
+    // ตรวจสอบว่ามี adbanner อยู่หรือไม่
+    const [existingAdbanners] = await pool.execute(
+      'SELECT id FROM adbanner WHERE id = ? AND customer_id = ?',
+      [id, customerId]
+    );
+
+    if (existingAdbanners.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบ adbanner ที่ระบุ'
+      });
+    }
+
+    // สร้าง dynamic query
+    const updateFields = [];
+    const updateValues = [];
+
+    if (ad_img !== undefined) {
+      updateFields.push('ad_img = ?');
+      updateValues.push(ad_img);
+    }
+    if (description !== undefined) {
+      updateFields.push('description = ?');
+      updateValues.push(description);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่มีข้อมูลที่จะอัปเดต'
+      });
+    }
+
+    updateValues.push(id, customerId);
+
+    const updateQuery = `UPDATE adbanner SET ${updateFields.join(', ')} WHERE id = ? AND customer_id = ?`;
+    await pool.execute(updateQuery, updateValues);
+
+    // ดึงข้อมูลที่อัปเดตแล้ว
+    const [updatedAdbanners] = await pool.execute(
+      'SELECT * FROM adbanner WHERE id = ? AND customer_id = ?',
+      [id, customerId]
+    );
+
+    res.json({
+      success: true,
+      message: 'อัปเดต adbanner สำเร็จ',
+      data: updatedAdbanners[0]
+    });
+
+  } catch (error) {
+    console.error('Error updating adbanner:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการอัปเดต',
+      error: error.message
+    });
+  }
+});
+
+// ลบ adbanner (Admin only)
+app.delete('/api/admin/adbanner/:id', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const customerId = req.customer_id;
+
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูล customer_id'
+      });
+    }
+
+    // ตรวจสอบว่ามี adbanner อยู่หรือไม่
+    const [existingAdbanners] = await pool.execute(
+      'SELECT id FROM adbanner WHERE id = ? AND customer_id = ?',
+      [id, customerId]
+    );
+
+    if (existingAdbanners.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบ adbanner ที่ระบุ'
+      });
+    }
+
+    // ลบ adbanner
+    await pool.execute(
+      'DELETE FROM adbanner WHERE id = ? AND customer_id = ?',
+      [id, customerId]
+    );
+
+    res.json({
+      success: true,
+      message: 'ลบ adbanner สำเร็จ'
+    });
+
+  } catch (error) {
+    console.error('Error deleting adbanner:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการลบ adbanner',
       error: error.message
     });
   }
