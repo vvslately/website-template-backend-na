@@ -7,6 +7,7 @@ import axios from 'axios';
 import QRCode from 'qrcode';
 import crypto from 'crypto';
 import { createRequire } from 'module';
+import puppeteer from 'puppeteer';
 
 const require = createRequire(import.meta.url);
 const generatePayload = require('promptpay-qr');
@@ -10641,6 +10642,118 @@ app.get('/api/admin/topups/stats/summary', authenticateToken, requirePermission(
       message: 'เกิดข้อผิดพลาดในการดึงสถิติ',
       error: error.message
     });
+  }
+});
+
+// Fetch rendered HTML from URL using Puppeteer
+app.get('/api/fetch-html', async (req, res) => {
+  let browser;
+  try {
+    const url = req.query.url || 'https://lemonshop.rdcw.xyz/categories';
+    
+    console.log(`Fetching rendered HTML from: ${url}`);
+    
+    // Launch headless browser
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+      ]
+    });
+    
+    const page = await browser.newPage();
+    
+    // Set viewport and user agent
+    await page.setViewport({ width: 1920, height: 1080 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    
+    // Navigate to URL and wait for content to render
+    await page.goto(url, {
+      waitUntil: 'networkidle2', // Wait until network is idle
+      timeout: 30000 // 30 seconds timeout
+    });
+    
+    // Wait a bit more for any dynamic content
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Get the full HTML after rendering
+    const html = await page.content();
+    
+    console.log(`Successfully fetched HTML (${html.length} characters)`);
+    
+    res.json({
+      success: true,
+      message: 'ดึง HTML ที่ render แล้วสำเร็จ',
+      data: {
+        url: url,
+        html: html,
+        length: html.length,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching HTML:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึง HTML',
+      error: error.message
+    });
+  } finally {
+    // Always close browser
+    if (browser) {
+      await browser.close();
+    }
+  }
+});
+
+// Fetch rendered HTML as plain text (for easier viewing)
+app.get('/api/fetch-html-text', async (req, res) => {
+  let browser;
+  try {
+    const url = req.query.url || 'https://lemonshop.rdcw.xyz/categories';
+    
+    console.log(`Fetching rendered HTML from: ${url}`);
+    
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+      ]
+    });
+    
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1920, height: 1080 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    
+    await page.goto(url, {
+      waitUntil: 'networkidle2',
+      timeout: 30000
+    });
+    
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    const html = await page.content();
+    
+    console.log(`Successfully fetched HTML (${html.length} characters)`);
+    
+    // Return as plain text for easier viewing in browser
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+
+  } catch (error) {
+    console.error('Error fetching HTML:', error);
+    res.status(500).send(`Error: ${error.message}`);
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
   }
 });
 
