@@ -10757,7 +10757,14 @@ app.get('/api/fetch-html-text', async (req, res) => {
   }
 });
 
-
+// Start server
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server is running on port ${PORT}`);
+  console.log(`📡 API available at http://localhost:${PORT}`);
+  console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔐 JWT Secret loaded: ${JWT_SECRET ? '✓' : '✗'}`);
+  console.log(`💾 Database: ${dbConfig.database} @ ${dbConfig.host}`);
+});
 
 // Graceful shutdown
 process.on('SIGINT', async () => {
