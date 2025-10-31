@@ -823,6 +823,7 @@ app.get('/get-web-config', async (req, res) => {
        promptpay_number, promptpay_name, 
        line_cookie, line_mac, verify_token, last_check, auto_verify_enabled, review, transac, annouce_status,
        user_card, topup_card, stock_card, sell_card,
+       prompt_pay_enabled, upload_slip_enabled, angpao_pay_enabled,
        created_at, updated_at 
        FROM config WHERE customer_id = ? ORDER BY id LIMIT 1`,
       [req.customer_id]
@@ -887,6 +888,9 @@ app.get('/get-web-config', async (req, res) => {
       topup_card: config.topup_card,
       stock_card: config.stock_card,
       sell_card: config.sell_card,
+      prompt_pay_enabled: config.prompt_pay_enabled,
+      upload_slip_enabled: config.upload_slip_enabled,
+      angpao_pay_enabled: config.angpao_pay_enabled,
       created_at: config.created_at,
       updated_at: config.updated_at
     };
@@ -998,7 +1002,10 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       user_card,
       topup_card,
       stock_card,
-      sell_card
+      sell_card,
+      prompt_pay_enabled,
+      upload_slip_enabled,
+      angpao_pay_enabled
     } = req.body;
 
     // Check if config exists for this customer
@@ -1195,6 +1202,18 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateFields.push('sell_card = ?');
       updateValues.push(sell_card ? 1 : 0);
     }
+    if (prompt_pay_enabled !== undefined) {
+      updateFields.push('prompt_pay_enabled = ?');
+      updateValues.push(prompt_pay_enabled ? 1 : 0);
+    }
+    if (upload_slip_enabled !== undefined) {
+      updateFields.push('upload_slip_enabled = ?');
+      updateValues.push(upload_slip_enabled ? 1 : 0);
+    }
+    if (angpao_pay_enabled !== undefined) {
+      updateFields.push('angpao_pay_enabled = ?');
+      updateValues.push(angpao_pay_enabled ? 1 : 0);
+    }
 
     if (updateFields.length === 0) {
       return res.status(400).json({
@@ -1231,6 +1250,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
        promptpay_number, promptpay_name, 
        line_cookie, line_mac, verify_token, last_check, auto_verify_enabled, review, transac, annouce_status,
        user_card, topup_card, stock_card, sell_card,
+       prompt_pay_enabled, upload_slip_enabled, angpao_pay_enabled,
        created_at, updated_at 
        FROM config WHERE customer_id = ?`,
       [req.customer_id]
@@ -1289,6 +1309,9 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
         topup_card: updatedConfig.topup_card,
         stock_card: updatedConfig.stock_card,
         sell_card: updatedConfig.sell_card,
+        prompt_pay_enabled: updatedConfig.prompt_pay_enabled,
+        upload_slip_enabled: updatedConfig.upload_slip_enabled,
+        angpao_pay_enabled: updatedConfig.angpao_pay_enabled,
         created_at: updatedConfig.created_at,
         updated_at: updatedConfig.updated_at
       }
@@ -10763,7 +10786,7 @@ app.get('/api/fetch-html-text', async (req, res) => {
 });
 
 // Start server
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, 'localhost', () => {
   console.log(`🚀 Server is running on port ${PORT}`);
   console.log(`📡 API available at http://localhost:${PORT}`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
