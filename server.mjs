@@ -343,16 +343,16 @@ app.post('/signup', async (req, res) => {
       });
     }
 
-    // Check if user already exists for this customer
+    // Check if user already exists for this customer (by fullname)
     const [existingUsers] = await pool.execute(
-      'SELECT id FROM users WHERE email = ? AND customer_id = ?',
-      [email, req.customer_id]
+      'SELECT id FROM users WHERE fullname = ? AND customer_id = ?',
+      [fullname, req.customer_id]
     );
 
     if (existingUsers.length > 0) {
       return res.status(409).json({
         success: false,
-        message: 'User with this email already exists'
+        message: 'User with this fullname already exists'
       });
     }
 
@@ -410,26 +410,26 @@ app.post('/login', async (req, res) => {
       });
     }
 
-    const { email, password } = req.body;
+    const { fullname, password } = req.body;
 
     // Validate required fields
-    if (!email || !password) {
+    if (!fullname || !password) {
       return res.status(400).json({
         success: false,
-        message: 'Email and password are required'
+        message: 'Fullname and password are required'
       });
     }
 
-    // Find user by email and customer_id
+    // Find user by fullname and customer_id
     const [users] = await pool.execute(
-      'SELECT id, fullname, email, password, money, points, role FROM users WHERE email = ? AND customer_id = ?',
-      [email, req.customer_id]
+      'SELECT id, fullname, email, password, money, points, role FROM users WHERE fullname = ? AND customer_id = ?',
+      [fullname, req.customer_id]
     );
 
     if (users.length === 0) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid email or password'
+        message: 'Invalid fullname or password'
       });
     }
 
@@ -441,7 +441,7 @@ app.post('/login', async (req, res) => {
     if (!isValidPassword) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid email or password'
+        message: 'Invalid fullname or password'
       });
     }
 
@@ -5196,11 +5196,16 @@ app.get('/admin/reports/sales', authenticateToken, requirePermission('can_edit_p
         GROUP_CONCAT(
           CONCAT(p.title, ' (', ti.quantity, 'x', ti.price, ')')
           SEPARATOR '; '
-        ) as items
+        ) as items,
+        GROUP_CONCAT(
+          DISTINCT ps.license_key
+          SEPARATOR ', '
+        ) as license_keys
       FROM transactions t
       LEFT JOIN users u ON t.user_id = u.id
       LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
       LEFT JOIN products p ON ti.product_id = p.id
+      LEFT JOIN product_stock ps ON ti.license_id = ps.id
       WHERE t.customer_id = ? ${dateFilter}
       GROUP BY t.id
       ORDER BY t.created_at DESC
