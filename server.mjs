@@ -1551,6 +1551,14 @@ app.get('/categories/:categoryId/products', async (req, res) => {
       [categoryId, req.customer_id]
     );
 
+    // Get count of subcategories
+    const [subcategoryCount] = await pool.execute(
+      'SELECT COUNT(*) as count FROM categories WHERE parent_id = ? AND customer_id = ? AND isActive = 1',
+      [categoryId, req.customer_id]
+    );
+
+    const subcategory_count = subcategoryCount[0]?.count || 0;
+
     // Calculate discounted prices for each product
     const productsWithDiscount = products.map(product => {
       const originalPrice = parseFloat(product.price);
@@ -1569,7 +1577,11 @@ app.get('/categories/:categoryId/products', async (req, res) => {
     res.json({
       success: true,
       message: 'Products retrieved successfully',
-      category: categoryCheck[0],
+      category: {
+        ...categoryCheck[0],
+        product_count: productsWithDiscount.length,
+        subcategory_count: subcategory_count
+      },
       products: productsWithDiscount,
       total: productsWithDiscount.length
     });
@@ -6092,14 +6104,16 @@ app.post('/admin/stock/sync', authenticateToken, requirePermission('can_edit_pro
     const { product_id = null } = req.body;
 
     let whereClause = 'WHERE p.customer_id = ?';
-    let queryParams = [req.customer_id];
+    let whereParams = [req.customer_id];
 
     if (product_id) {
       whereClause += ' AND p.id = ?';
-      queryParams.push(product_id);
+      whereParams.push(product_id);
     }
 
     // Calculate actual stock counts from product_stock table
+    // Build query params: customer_id for subquery, then whereParams for WHERE clause
+    const stockSyncParams = [req.customer_id, ...whereParams];
     const [stockCounts] = await pool.execute(`
       SELECT 
         p.id as product_id,
@@ -6116,10 +6130,11 @@ app.post('/admin/stock/sync', authenticateToken, requirePermission('can_edit_pro
           SUM(CASE WHEN ps.sold = 0 THEN 1 ELSE 0 END) as available_count,
           SUM(CASE WHEN ps.sold = 1 THEN 1 ELSE 0 END) as sold_count
         FROM product_stock ps
+        WHERE ps.customer_id = ?
         GROUP BY ps.product_id
       ) stock_count ON p.id = stock_count.product_id
       ${whereClause}
-    `, queryParams);
+    `, stockSyncParams);
 
     // Update products with correct stock counts
     const updates = [];
