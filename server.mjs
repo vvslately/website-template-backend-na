@@ -823,7 +823,7 @@ app.get('/get-web-config', async (req, res) => {
        promptpay_number, promptpay_name, 
        line_cookie, line_mac, verify_token, last_check, auto_verify_enabled, review, transac, annouce_status,
        user_card, topup_card, stock_card, sell_card,
-       prompt_pay_enabled, upload_slip_enabled, angpao_pay_enabled,
+       prompt_pay_enabled, upload_slip_enabled, angpao_pay_enabled, angpao_fee,
        created_at, updated_at 
        FROM config WHERE customer_id = ? ORDER BY id LIMIT 1`,
       [req.customer_id]
@@ -891,6 +891,7 @@ app.get('/get-web-config', async (req, res) => {
       prompt_pay_enabled: config.prompt_pay_enabled,
       upload_slip_enabled: config.upload_slip_enabled,
       angpao_pay_enabled: config.angpao_pay_enabled,
+      angpao_fee: config.angpao_fee,
       created_at: config.created_at,
       updated_at: config.updated_at
     };
@@ -1005,7 +1006,8 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       sell_card,
       prompt_pay_enabled,
       upload_slip_enabled,
-      angpao_pay_enabled
+      angpao_pay_enabled,
+      angpao_fee
     } = req.body;
 
     // Check if config exists for this customer
@@ -1214,6 +1216,10 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateFields.push('angpao_pay_enabled = ?');
       updateValues.push(angpao_pay_enabled ? 1 : 0);
     }
+    if (angpao_fee !== undefined) {
+      updateFields.push('angpao_fee = ?');
+      updateValues.push(angpao_fee ? 1 : 0);
+    }
 
     if (updateFields.length === 0) {
       return res.status(400).json({
@@ -1250,7 +1256,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
        promptpay_number, promptpay_name, 
        line_cookie, line_mac, verify_token, last_check, auto_verify_enabled, review, transac, annouce_status,
        user_card, topup_card, stock_card, sell_card,
-       prompt_pay_enabled, upload_slip_enabled, angpao_pay_enabled,
+       prompt_pay_enabled, upload_slip_enabled, angpao_pay_enabled, angpao_fee,
        created_at, updated_at 
        FROM config WHERE customer_id = ?`,
       [req.customer_id]
@@ -1312,6 +1318,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
         prompt_pay_enabled: updatedConfig.prompt_pay_enabled,
         upload_slip_enabled: updatedConfig.upload_slip_enabled,
         angpao_pay_enabled: updatedConfig.angpao_pay_enabled,
+        angpao_fee: updatedConfig.angpao_fee,
         created_at: updatedConfig.created_at,
         updated_at: updatedConfig.updated_at
       }
@@ -3062,9 +3069,9 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
       return res.status(400).json({ success: false, error: 'กรุณาระบุ link' });
     }
 
-    // ดึงเบอร์โทรจากตาราง config สำหรับ customer นี้
+    // ดึงเบอร์โทรและ angpao_fee จากตาราง config สำหรับ customer นี้
     const [configRows] = await pool.execute(
-      'SELECT owner_phone FROM config WHERE customer_id = ? ORDER BY id ASC LIMIT 1',
+      'SELECT owner_phone, angpao_fee FROM config WHERE customer_id = ? ORDER BY id ASC LIMIT 1',
       [req.customer_id]
     );
 
@@ -3073,6 +3080,7 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
     }
 
     const phone = configRows[0].owner_phone;
+    const angpaoFeeEnabled = configRows[0].angpao_fee === 1 || configRows[0].angpao_fee === true;
 
     // ดึงข้อมูลผู้ใช้ปัจจุบัน
     const [user] = await pool.execute(
@@ -3152,12 +3160,28 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
         throw new Error('ไม่ได้รับข้อมูลจาก API');
       }
 
-      const amount = data.data ? parseFloat(data.data.amount) : 0;
+      const originalAmount = data.data ? parseFloat(data.data.amount) : 0;
       const status = data.success ? 'success' : 'failed';
 
       // ตรวจสอบจำนวนเงิน
-      if (amount <= 0) {
+      if (originalAmount <= 0) {
         throw new Error('จำนวนเงินไม่ถูกต้อง');
+      }
+
+      // คำนวณค่าธรรมเนียม 2.6% ถ้า angpao_fee เปิดใช้งาน
+      let finalAmount = originalAmount;
+      let feeAmount = 0;
+      let feeMessage = '';
+
+      if (angpaoFeeEnabled) {
+        feeAmount = originalAmount * 0.026; // 2.6%
+        finalAmount = originalAmount - feeAmount;
+        
+        // ปัดเศษให้เป็น 2 ตำแหน่งทศนิยม
+        feeAmount = Math.round(feeAmount * 100) / 100;
+        finalAmount = Math.round(finalAmount * 100) / 100;
+        
+        feeMessage = ` (หักค่าธรรมเนียม 2.6% = ${feeAmount.toFixed(2)} บาท)`;
       }
 
       // ตรวจสอบว่ามีการเติมเงินซ้ำหรือไม่ (ตรวจสอบ campaign ID ใน 24 ชั่วโมงที่ผ่านมา)
@@ -3170,15 +3194,15 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
         throw new Error('ลิงก์นี้ถูกใช้แล้วใน 24 ชั่วโมงที่ผ่านมา');
       }
 
-      // บันทึกลงตาราง topups
+      // บันทึกลงตาราง topups (บันทึกจำนวนเงินที่หักค่าธรรมเนียมแล้ว)
       const [topupResult] = await connection.execute(
         'INSERT INTO topups (customer_id, user_id, amount, method, transaction_ref, status) VALUES (?, ?, ?, ?, ?, ?)',
-        [req.customer_id, req.user.id, amount, 'gift_card', `Campaign: ${campaignId}`, status]
+        [req.customer_id, req.user.id, finalAmount, 'gift_card', `Campaign: ${campaignId}`, status]
       );
 
       // ถ้าสำเร็จ ให้บวกเงิน
       if (data.success && (data.message === 'รับเงินสำเร็จ' || data.message === 'success')) {
-        const newMoney = parseFloat(user[0].money) + amount;
+        const newMoney = parseFloat(user[0].money) + finalAmount;
 
         // อัปเดตเงินผู้ใช้
         const [updateResult] = await connection.execute(
@@ -3198,12 +3222,15 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
 
         await connection.commit();
 
-        console.log(`Topup successful: Customer ${req.customer_id}, User ${req.user.id}, Amount: ${amount}, New Balance: ${newMoney}`);
+        console.log(`Topup successful: Customer ${req.customer_id}, User ${req.user.id}, Original Amount: ${originalAmount}, Fee: ${feeAmount}, Final Amount: ${finalAmount}, New Balance: ${newMoney}`);
 
         res.json({
           success: true,
-          message: `เติมเงินสำเร็จ: +${amount} บาท`,
-          amount: amount,
+          message: `เติมเงินสำเร็จ: +${finalAmount.toFixed(2)} บาท${feeMessage}`,
+          amount: finalAmount,
+          original_amount: originalAmount,
+          fee_amount: feeAmount,
+          fee_enabled: angpaoFeeEnabled,
           new_balance: newMoney,
           topup_id: topupResult.insertId,
           campaign_id: campaignId
@@ -3222,7 +3249,7 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
         res.json({
           success: false,
           message: data.message || 'การเติมเงินไม่สำเร็จ',
-          amount: amount,
+          amount: originalAmount,
           topup_id: topupResult.insertId,
           campaign_id: campaignId
         });
