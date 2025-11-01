@@ -6801,24 +6801,24 @@ app.post('/admin/roles', authenticateToken, requirePermission('can_edit_users'),
       can_access_reseller_price = false
     } = req.body;
 
-    // Validate required fields
+    // ตรวจสอบข้อมูลที่จำเป็น
     if (!rank_name) {
       return res.status(400).json({
         success: false,
-        message: 'Role name is required'
+        message: 'จำเป็นต้องระบุชื่อบทบาท'
       });
     }
 
-    // Validate role name format (alphanumeric and underscore only)
-    const roleNameRegex = /^[a-zA-Z0-9_]+$/;
+    // ตรวจสอบรูปแบบชื่อบทบาท (ตัวอักษรภาษาไทย อังกฤษ ตัวเลข และขีดล่าง)
+    const roleNameRegex = /^[\u0E00-\u0E7Fa-zA-Z0-9_\s]+$/;
     if (!roleNameRegex.test(rank_name)) {
       return res.status(400).json({
         success: false,
-        message: 'Role name can only contain letters, numbers, and underscores'
+        message: 'ชื่อบทบาทสามารถมีได้เฉพาะตัวอักษรภาษาไทย อังกฤษ ตัวเลข และขีดล่างเท่านั้น'
       });
     }
 
-    // Check if role already exists
+    // ตรวจสอบว่ามีบทบาทชื่อนี้อยู่แล้วหรือไม่
     const [existingRole] = await pool.execute(
       'SELECT id FROM roles WHERE rank_name = ? AND customer_id = ?',
       [rank_name, req.customer_id]
@@ -6827,11 +6827,11 @@ app.post('/admin/roles', authenticateToken, requirePermission('can_edit_users'),
     if (existingRole.length > 0) {
       return res.status(409).json({
         success: false,
-        message: 'Role with this name already exists'
+        message: 'บทบาทชื่อนี้มีอยู่แล้ว'
       });
     }
 
-    // Insert new role
+    // เพิ่มบทบาทใหม่
     const [result] = await pool.execute(
       `INSERT INTO roles (
         customer_id,
@@ -6861,7 +6861,7 @@ app.post('/admin/roles', authenticateToken, requirePermission('can_edit_users'),
       ]
     );
 
-    // Get the created role
+    // ดึงข้อมูลบทบาทที่สร้างขึ้น
     const [newRole] = await pool.execute(
       `SELECT 
         id,
@@ -6883,7 +6883,7 @@ app.post('/admin/roles', authenticateToken, requirePermission('can_edit_users'),
 
     res.status(201).json({
       success: true,
-      message: 'Role created successfully',
+      message: 'สร้างบทบาทสำเร็จ',
       data: {
         role: {
           ...newRole[0],
@@ -6903,10 +6903,10 @@ app.post('/admin/roles', authenticateToken, requirePermission('can_edit_users'),
     });
 
   } catch (error) {
-    console.error('Create role error:', error);
+    console.error('ข้อผิดพลาดในการสร้างบทบาท:', error);
     res.status(500).json({
       success: false,
-      message: 'Internal server error',
+      message: 'เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์',
       error: error.message
     });
   }
